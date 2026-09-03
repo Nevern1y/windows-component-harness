@@ -1,0 +1,19 @@
+{
+  "runtime": {
+    "id": "powershell",
+    "version": "7.5.2"
+  },
+  "modules": [
+    {
+      "Name": "Pester",
+      "Version": "5.6.1",
+      "Repository": "PSGallery",
+      "source": "https://www.powershellgallery.com/api/v2"
+    },
+    {
+      "Name": "PreviewModule",
+      "Version": "2.0.0-beta.1",
+      "Repository": "PSGallery"
+    }
+  ]
+}

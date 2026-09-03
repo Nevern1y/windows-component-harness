@@ -1,0 +1,21 @@
+{
+  "name": "global",
+  "version": "1.0.0",
+  "dependencies": {
+    "@acme/cli": {
+      "version": "2.4.0",
+      "resolved": "https://registry.npmjs.org/@acme/cli/-/cli-2.4.0.tgz",
+      "integrity": "sha512-acmefixture",
+      "dependencies": {
+        "shared-dep": {
+          "version": "1.3.2",
+          "resolved": "https://registry.npmjs.org/shared-dep/-/shared-dep-1.3.2.tgz"
+        }
+      }
+    },
+    "typescript": {
+      "version": "5.4.5",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.4.5.tgz"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+  NAME                   STATE           VERSION
+* Ubuntu-22.04           Running         2
+  Debian                 Stopped         2
+  Alpine                 Stopped         1

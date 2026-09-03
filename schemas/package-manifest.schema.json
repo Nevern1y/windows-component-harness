@@ -1,0 +1,255 @@
+{
+  "$defs": {
+    "Architecture": {
+      "enum": [
+        "X86",
+        "X64",
+        "ARM64",
+        "NEUTRAL",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "ComponentId": {
+      "description": "Stable component identity: `cmp_` followed by lowercase unpadded Base32 BLAKE3-256.",
+      "type": "string"
+    },
+    "KnownFolderToken": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "USER_PROFILE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ROAMING_APP_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "LOCAL_APP_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_FILES",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_FILES_X86",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "START_MENU",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "STARTUP",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DESKTOP",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DOCUMENTS",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "USER_SELECTED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SourceHostSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/Architecture"
+        },
+        "known_folder_tokens": {
+          "items": {
+            "$ref": "#/$defs/KnownFolderToken"
+          },
+          "type": "array"
+        },
+        "os_build": {
+          "type": "string"
+        },
+        "os_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "os_version",
+        "os_build",
+        "architecture",
+        "known_folder_tokens"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "component_ids": {
+      "items": {
+        "$ref": "#/$defs/ComponentId"
+      },
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "format_version": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "object_index_digest": {
+      "type": "string"
+    },
+    "package_id": {
+      "type": "string"
+    },
+    "required_architecture": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Architecture"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "required_os": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_host": {
+      "$ref": "#/$defs/SourceHostSummary"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "package_id",
+    "format_version",
+    "created_at",
+    "source_host",
+    "component_ids",
+    "warnings",
+    "object_index_digest"
+  ],
+  "title": "PackageManifest",
+  "type": "object"
+}

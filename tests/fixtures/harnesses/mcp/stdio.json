@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "stdio",
+      "command": "C:\\Program Files\\nodejs\\npx.cmd",
+      "args": ["-y", "@upstash/context7-mcp", "--api-key", "fixture-argument-secret"],
+      "cwd": "%MCP_WORKSPACE%",
+      "env": {
+        "CONTEXT7_API_KEY": "fixture-context7-secret",
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

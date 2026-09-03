@@ -1,0 +1,20 @@
+{
+  "runtime": {
+    "version": "go1.24.5",
+    "architecture": "amd64"
+  },
+  "packages": [
+    {
+      "module": "github.com/acme/tool",
+      "version": "v1.2.3",
+      "source_kind": "git",
+      "source_identifier": "github.com/acme/tool",
+      "source": "https://github.com/acme/tool"
+    },
+    {
+      "module": "example.com/local",
+      "version": "v0.0.0",
+      "source_kind": "path"
+    }
+  ]
+}

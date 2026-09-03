@@ -1,0 +1,41 @@
+{
+  "version": "1",
+  "pip_version": "25.0",
+  "environment": {
+    "id": "python",
+    "python_version": "3.13.5",
+    "implementation_name": "cp313",
+    "architecture": "x64"
+  },
+  "installed": [
+    {
+      "metadata": {
+        "name": "requests",
+        "version": "2.32.4"
+      },
+      "installer": "pip",
+      "requested": true
+    },
+    {
+      "metadata": {
+        "name": "editable-tool",
+        "version": "1.0.0"
+      },
+      "direct_url": {
+        "url": "file:///C:/src/editable-tool",
+        "dir_info": {
+          "editable": true
+        }
+      }
+    },
+    {
+      "metadata": {
+        "name": "native-tool",
+        "version": "2.0.0"
+      },
+      "requires_abi": "cp312",
+      "source_kind": "pypi",
+      "source": "https://pypi.org/simple"
+    }
+  ]
+}

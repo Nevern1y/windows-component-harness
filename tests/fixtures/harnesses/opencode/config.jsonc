@@ -1,0 +1,27 @@
+{
+  // OpenCode global configuration with symbolic interpolation.
+  "$schema": "https://opencode.ai/config.json",
+  "model": "${OPENCODE_MODEL}",
+  "mcp": {
+    "context7": {
+      "type": "local",
+      "command": ["node", "server.js", "--api-key", "fixture-context7-secret"],
+      "environment": {
+        "CONTEXT7_API_KEY": "fixture-context7-env-secret",
+        "NODE_ENV": "production"
+      }
+    },
+    "remote": {
+      "type": "remote",
+      "url": "${MCP_ENDPOINT}"
+    }
+  },
+  "instructions": ["${OPENCODE_INSTRUCTIONS}"],
+  "agent": {
+    "reviewer": { "mode": "primary" }
+  },
+  "command": {
+    "review": { "template": "Review the current change" }
+  },
+  "plugin": ["@opencode/plugin-review"],
+}

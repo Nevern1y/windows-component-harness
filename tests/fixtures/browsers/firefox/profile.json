@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 33,
+  "addons": [
+    {
+      "id": "fixture@example.invalid",
+      "version": "7.8.9",
+      "defaultLocale": {
+        "name": "Fixture Notes"
+      }
+    }
+  ]
+}

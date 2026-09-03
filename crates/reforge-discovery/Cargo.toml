@@ -1,0 +1,38 @@
+[package]
+name = "reforge-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+reforge-domain.workspace = true
+reforge-platform-windows.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+json5.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+url.workspace = true
+[[test]]
+name = "mcp"
+path = "tests/harnesses/mcp.rs"
+
+[[test]]
+name = "codex"
+path = "tests/harnesses/codex.rs"
+
+[[test]]
+name = "claude"
+path = "tests/harnesses/claude.rs"
+
+[[test]]
+name = "opencode"
+path = "tests/harnesses/opencode.rs"

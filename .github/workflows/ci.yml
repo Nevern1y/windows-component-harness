@@ -1,0 +1,207 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Typeshare CLI
+        run: cargo install typeshare-cli --version 1.13.4 --locked
+
+      - name: Generate TypeScript DTOs
+        run: pnpm --dir ui generate:types
+
+      - name: Check generated TypeScript DTOs
+        shell: pwsh
+        run: git diff --exit-code -- ui/src/lib/generated.ts
+
+      - name: Build UI
+        run: pnpm run ui:build
+
+      - name: Check UI
+        run: pnpm run ui:check
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build Rust workspace
+        run: cargo build --workspace --locked
+
+      - name: Build x64 CLI artifact
+        run: cargo build -p reforge-cli --release --target x86_64-pc-windows-msvc --locked
+
+      - name: Smoke-test x64 CLI-only distribution
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'target\x86_64-pc-windows-msvc\release\reforge.exe').Path
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw "CLI artifact is not x86_64 (PE machine 0x$('{0:x4}' -f $machine))."
+          }
+          $version = (& $exe --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            throw 'x64 CLI --version smoke test failed.'
+          }
+          $desktopSource = Get-Content -LiteralPath 'src-tauri\src\lib.rs' -Raw
+          if ($desktopSource -notmatch 'CLI_ONLY_BUILD:\s*bool\s*=\s*true') {
+            throw 'Desktop artifact is not hard-locked to CLI-only mode.'
+          }
+          if ($desktopSource -match 'invoke_handler|tauri_plugin_dialog::init') {
+            throw 'CLI-only desktop artifact exposes a command or dialog plugin registration.'
+          }
+          $capability = Get-Content -LiteralPath 'src-tauri\capabilities\main.json' -Raw | ConvertFrom-Json
+          if (@($capability.permissions).Count -ne 0) {
+            throw 'CLI-only desktop capability unexpectedly grants permissions.'
+          }
+
+      - name: Run Rust lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare supply-chain reports
+        run: mkdir -p artifacts
+
+      - name: Audit Rust dependencies
+        id: rust_audit
+        uses: actions-rust-lang/audit@v1
+        continue-on-error: true
+        with:
+          # Tauri's cross-platform GTK graph emits unmaintained warnings; vulnerabilities still fail the action.
+          denyWarnings: false
+          createIssues: false
+
+      - name: Capture Rust advisory report
+        id: rust_report
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          cargo audit --json > artifacts/cargo-audit.json
+          status=$?
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Audit frontend dependencies
+        id: pnpm_audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          pnpm audit --audit-level high --json > artifacts/pnpm-audit.json
+          status=$?
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Generate Rust license report
+        id: cargo_licenses
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > artifacts/cargo-metadata.json
+          jq '[.packages[] | {name, version, source, license, license_file}]' \
+            artifacts/cargo-metadata.json > artifacts/cargo-licenses.json
+          if jq -e 'any(.[]; ((.license == null or .license == "") and (.license_file == null or .license_file == "")))' \
+            artifacts/cargo-licenses.json > /dev/null; then
+            echo 'A Cargo dependency is missing license metadata.' >&2
+            exit 1
+          fi
+
+      - name: Generate CycloneDX SBOM
+        id: sbom
+        uses: anchore/sbom-action@v0.24.2
+        continue-on-error: true
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: artifacts/reforge-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Upload supply-chain reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reforge-ci-supply-chain-${{ github.run_id }}
+          path: artifacts
+          if-no-files-found: error
+
+      - name: Enforce supply-chain gates
+        if: always()
+        shell: bash
+        run: |
+          for report in artifacts/cargo-audit.json artifacts/pnpm-audit.json artifacts/cargo-licenses.json artifacts/reforge-sbom.cdx.json; do
+            if [[ ! -s "$report" ]]; then
+              echo "Missing or empty supply-chain report: $report" >&2
+              exit 1
+            fi
+          done
+          if [[ '${{ steps.rust_audit.outcome }}' != 'success' || \
+                '${{ steps.rust_report.outputs.exit_code }}' != '0' || \
+                '${{ steps.pnpm_audit.outputs.exit_code }}' != '0' || \
+                '${{ steps.cargo_licenses.outcome }}' != 'success' || \
+                '${{ steps.sbom.outcome }}' != 'success' ]]; then
+            echo 'At least one supply-chain gate failed.' >&2
+            exit 1
+          fi

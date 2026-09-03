@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "scope": "local_machine",
+      "view": "view_64",
+      "key_path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\reforge.exe",
+      "values": [
+        { "name": "", "type": "REG_SZ", "value": "%ProgramFiles%\\Reforge\\reforge.exe" },
+        { "name": "Path", "type": "REG_EXPAND_SZ", "value": "%ProgramFiles%\\Reforge" }
+      ]
+    },
+    {
+      "scope": "current_user",
+      "view": "view_32",
+      "key_path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\reforge-user.exe",
+      "values": [
+        { "name": "", "type": "REG_SZ", "value": "%LocalAppData%\\Reforge\\reforge-user.exe" }
+      ]
+    }
+  ],
+  "errors": []
+}

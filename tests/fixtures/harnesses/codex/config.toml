@@ -1,0 +1,18 @@
+cli_auth_credentials_store = "file"
+model_instructions_file = "instructions.md"
+
+[mcp_servers.context7]
+type = "stdio"
+command = "node"
+args = ["server.js", "--api-key", "fixture-argument-secret"]
+cwd = "%MCP_WORKSPACE%"
+
+[mcp_servers.context7.env]
+CONTEXT7_API_KEY = "${CONTEXT7_API_KEY}"
+NODE_ENV = "production"
+
+[agents.review]
+description = "Review generated changes before restore"
+
+[hooks.notify]
+command = "echo codex-hook"

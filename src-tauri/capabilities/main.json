@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Windows release shell with no engine or plugin permissions",
+  "windows": ["main"],
+  "permissions": [],
+  "platforms": ["windows"]
+}

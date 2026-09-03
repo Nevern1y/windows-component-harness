@@ -1,0 +1,27 @@
+# Rust build output
+target/
+
+# Node and frontend build output
+/node_modules/
+/ui/node_modules/
+/ui/dist/
+
+# Local tool state and generated test artifacts
+/.tmp-reforge-cli-state/
+/.serena/
+
+# Nested unrelated workspace present in the development directory
+/ui-ready/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

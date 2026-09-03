@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "id": "rust",
+    "version": "stable-x86_64-pc-windows-msvc",
+    "architecture": "x64"
+  },
+  "packages": [
+    {
+      "name": "ripgrep",
+      "version": "14.1.0",
+      "source_kind": "crates.io",
+      "source_identifier": "crates.io/ripgrep",
+      "source": "https://crates.io/crates/ripgrep"
+    },
+    {
+      "name": "local-tool",
+      "version": "0.1.0",
+      "source_kind": "path",
+      "source_identifier": "local-workspace"
+    }
+  ]
+}

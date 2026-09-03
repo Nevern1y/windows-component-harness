@@ -1,0 +1,4 @@
+Default Distribution: Ubuntu-22.04
+Default Version: 2
+WSL version: 2.4.13.0
+Kernel version: 5.15.167.4-1

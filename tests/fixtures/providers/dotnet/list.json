@@ -1,0 +1,18 @@
+{
+  "runtime": {
+    "version": "9.0.1"
+  },
+  "tools": [
+    {
+      "packageId": "dotnet-ef",
+      "version": "9.0.1",
+      "source_kind": "nuget",
+      "source_identifier": "dotnet-ef",
+      "source": "https://api.nuget.org/v3/index.json"
+    },
+    {
+      "packageId": "local-tool",
+      "version": "1.0.0"
+    }
+  ]
+}

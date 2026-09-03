@@ -1,0 +1,15 @@
+{
+  "$schema": "https://aka.ms/winget-packages.schema.2.0.json",
+  "Sources": [
+    {
+      "Packages": [
+        { "PackageIdentifier": "Contoso.Editor", "Version": "4.2.0" }
+      ],
+      "SourceDetails": {
+        "Argument": "https://packages.example.test/index",
+        "Identifier": "Contoso.Private.Source",
+        "Name": "private-source"
+      }
+    }
+  ]
+}

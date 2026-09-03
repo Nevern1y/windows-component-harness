@@ -1,0 +1,7 @@
+{
+  // Policy-owned configuration must remain visible and manual.
+  "model": "managed-model",
+  "provider": {
+    "fixture": { "options": { "apiKey": "fixture-managed-secret" } }
+  },
+}

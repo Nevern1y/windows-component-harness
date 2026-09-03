@@ -1,0 +1,25 @@
+[package]
+name = "reforge-package-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+blake3 = "1.8"
+libfuzzer-sys = "0.4"
+reforge-domain = { path = "../../reforge-domain" }
+reforge-package = { path = ".." }
+serde_json = "1.0"
+
+[[bin]]
+name = "package"
+path = "fuzz_targets/package.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

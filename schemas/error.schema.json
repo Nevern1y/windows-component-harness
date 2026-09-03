@@ -1,0 +1,111 @@
+{
+  "$defs": {
+    "ComponentId": {
+      "description": "Stable component identity: `cmp_` followed by lowercase unpadded Base32 BLAKE3-256.",
+      "type": "string"
+    },
+    "OperationId": {
+      "description": "Stable operation identity in the form `op_<run-id>_<decimal-ordinal>`.",
+      "type": "string"
+    },
+    "ReforgeErrorCode": {
+      "enum": [
+        "ACCESS_DENIED",
+        "PATH_NOT_FOUND",
+        "FILE_LOCKED",
+        "INVALID_PATH",
+        "REPARSE_POINT",
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_PARSE_FAILED",
+        "SOURCE_UNAVAILABLE",
+        "VERSION_UNAVAILABLE",
+        "PACKAGE_NOT_FOUND",
+        "PACKAGE_CORRUPT",
+        "PACKAGE_UNTRUSTED",
+        "VAULT_REQUIRED",
+        "VAULT_DECRYPT_FAILED",
+        "SECRET_NOT_PORTABLE",
+        "MANUAL_SECRET_REQUIRED",
+        "SCHEMA_INVALID",
+        "UNSUPPORTED_VERSION",
+        "ARCHITECTURE_CONFLICT",
+        "OS_CONFLICT",
+        "INSUFFICIENT_DISK",
+        "DEPENDENCY_CYCLE",
+        "SELECTION_INCOMPLETE",
+        "TARGET_CONFLICT",
+        "SECURITY_POLICY",
+        "MANUAL_ACTION_REQUIRED",
+        "USER_ACTION_REQUIRED",
+        "REBOOT_REQUIRED",
+        "OPERATION_FAILED",
+        "INSTALL_FAILED",
+        "VERIFICATION_FAILED",
+        "INTERRUPTED",
+        "CANCELLED"
+      ],
+      "type": "string"
+    },
+    "Retryability": {
+      "enum": [
+        "NEVER",
+        "SAFE_RETRY",
+        "REQUIRES_USER_ACTION",
+        "AFTER_REBOOT"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ReforgeErrorCode"
+    },
+    "component": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComponentId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "context_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OperationId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retryability": {
+      "$ref": "#/$defs/Retryability"
+    },
+    "technical_detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "retryability"
+  ],
+  "title": "ErrorEnvelope",
+  "type": "object"
+}

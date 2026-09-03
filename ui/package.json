@@ -1,0 +1,29 @@
+{
+  "name": "@reforge/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "generate:types": "typeshare ../crates/reforge-domain --lang=typescript --output-file=src/lib/generated.ts",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "6.2.4",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/svelte": "5.4.2",
+    "@testing-library/user-event": "14.6.6",
+    "jsdom": "30.0.1",
+    "svelte": "5.57.0",
+    "svelte-check": "4.7.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  },
+  "dependencies": {
+    "@lucide/svelte": "1.31.0",
+    "@tauri-apps/api": "2.11.1"
+  }
+}

@@ -1,0 +1,192 @@
+name: Windows Hyper-V E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_vhdx:
+        description: Absolute path to the standalone Windows 11 x64 base VHDX on the self-hosted runner
+        required: true
+        type: string
+      vm_root:
+        description: Absolute non-system path for the two disposable fixture VMs
+        required: true
+        type: string
+      artifact_root:
+        description: Absolute path for redacted E2E reports
+        required: true
+        type: string
+      switch_name:
+        description: Existing external Hyper-V switch name
+        required: true
+        type: string
+      reboot_package_id:
+        description: Controlled FOSS WinGet package whose installer exits with 3010
+        required: true
+        type: string
+      fixture_package_ids:
+        description: Semicolon-separated ordinary fixture package IDs
+        required: false
+        default: 7zip.7zip
+        type: string
+      source_vm:
+        description: Disposable source VM name
+        required: false
+        default: Reforge-E2E-Source
+        type: string
+      target_vm:
+        description: Disposable target VM name
+        required: false
+        default: Reforge-E2E-Target
+        type: string
+      source_checkpoint:
+        description: Source checkpoint name
+        required: false
+        default: SourceReady
+        type: string
+      target_checkpoint:
+        description: Clean target checkpoint name
+        required: false
+        default: CleanBaseline
+        type: string
+      reset_existing:
+        description: Replace only the named fixture VMs and directories
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  hyper-v-e2e:
+    runs-on: [self-hosted, windows, hyper-v]
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Require a 64-bit Windows runner
+        shell: pwsh
+        run: |
+          if (-not [Environment]::Is64BitOperatingSystem) {
+            throw 'The Hyper-V E2E runner must be a 64-bit Windows host.'
+          }
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build x64 CLI
+        run: cargo build -p reforge-cli --release --target x86_64-pc-windows-msvc --locked
+
+      - name: Provision isolated Hyper-V fixtures
+        shell: pwsh
+        env:
+          VM_USERNAME: ${{ secrets.REFORGE_E2E_VM_USERNAME }}
+          VM_PASSWORD: ${{ secrets.REFORGE_E2E_VM_PASSWORD }}
+          BASE_VHDX: ${{ inputs.base_vhdx }}
+          VM_ROOT: ${{ inputs.vm_root }}
+          SWITCH_NAME: ${{ inputs.switch_name }}
+          FIXTURE_PACKAGE_IDS: ${{ inputs.fixture_package_ids }}
+          REBOOT_PACKAGE_ID: ${{ inputs.reboot_package_id }}
+          SOURCE_VM: ${{ inputs.source_vm }}
+          TARGET_VM: ${{ inputs.target_vm }}
+          SOURCE_CHECKPOINT: ${{ inputs.source_checkpoint }}
+          TARGET_CHECKPOINT: ${{ inputs.target_checkpoint }}
+          RESET_EXISTING: ${{ inputs.reset_existing }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:VM_USERNAME) -or [string]::IsNullOrWhiteSpace($env:VM_PASSWORD)) {
+            throw 'REFORGE_E2E_VM_USERNAME and REFORGE_E2E_VM_PASSWORD repository secrets are required.'
+          }
+          $securePassword = ConvertTo-SecureString -String $env:VM_PASSWORD -AsPlainText -Force
+          $credential = [System.Management.Automation.PSCredential]::new($env:VM_USERNAME, $securePassword)
+          $fixtureIds = @($env:FIXTURE_PACKAGE_IDS -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($fixtureIds.Count -eq 0) {
+            throw 'At least one ordinary fixture package ID is required.'
+          }
+          $parameters = @{
+            BaseVhdx = $env:BASE_VHDX
+            VmRoot = $env:VM_ROOT
+            ReforgeExe = (Join-Path $env:GITHUB_WORKSPACE 'target\x86_64-pc-windows-msvc\release\reforge.exe')
+            Credential = $credential
+            SwitchName = $env:SWITCH_NAME
+            FixturePackageId = [string[]]$fixtureIds
+            RebootPackageId = $env:REBOOT_PACKAGE_ID
+            SourceVmName = $env:SOURCE_VM
+            TargetVmName = $env:TARGET_VM
+            SourceCheckpoint = $env:SOURCE_CHECKPOINT
+            TargetCheckpoint = $env:TARGET_CHECKPOINT
+          }
+          if ($env:RESET_EXISTING -eq 'true') {
+            $parameters.ResetExisting = $true
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\vm\Provision.ps1') @parameters
+
+      - name: Run source-to-target Hyper-V E2E harness
+        shell: pwsh
+        env:
+          VM_USERNAME: ${{ secrets.REFORGE_E2E_VM_USERNAME }}
+          VM_PASSWORD: ${{ secrets.REFORGE_E2E_VM_PASSWORD }}
+          ARTIFACT_ROOT: ${{ inputs.artifact_root }}
+          FIXTURE_PACKAGE_IDS: ${{ inputs.fixture_package_ids }}
+          REBOOT_PACKAGE_ID: ${{ inputs.reboot_package_id }}
+          SOURCE_VM: ${{ inputs.source_vm }}
+          TARGET_VM: ${{ inputs.target_vm }}
+          SOURCE_CHECKPOINT: ${{ inputs.source_checkpoint }}
+          TARGET_CHECKPOINT: ${{ inputs.target_checkpoint }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:VM_USERNAME) -or [string]::IsNullOrWhiteSpace($env:VM_PASSWORD)) {
+            throw 'REFORGE_E2E_VM_USERNAME and REFORGE_E2E_VM_PASSWORD repository secrets are required.'
+          }
+          New-Item -ItemType Directory -Path $env:ARTIFACT_ROOT -Force | Out-Null
+          $passwordFile = Join-Path $env:RUNNER_TEMP 'reforge-e2e-password.txt'
+          $securePassword = ConvertTo-SecureString -String $env:VM_PASSWORD -AsPlainText -Force
+          $protectedPassword = ConvertFrom-SecureString -SecureString $securePassword
+          Set-Content -LiteralPath $passwordFile -Value $protectedPassword -Encoding ASCII -NoNewline
+          $env:REFORGE_E2E_RUNNER = Join-Path $env:GITHUB_WORKSPACE 'tests\vm\Run-E2E.ps1'
+          $env:REFORGE_E2E_PASSWORD_FILE = $passwordFile
+          $env:REFORGE_E2E_ARTIFACT_ROOT = $env:ARTIFACT_ROOT
+          $env:REFORGE_E2E_USERNAME = $env:VM_USERNAME
+          $env:REFORGE_E2E_FIXTURE_PACKAGE_IDS = $env:FIXTURE_PACKAGE_IDS
+          $env:REFORGE_E2E_REBOOT_PACKAGE_ID = $env:REBOOT_PACKAGE_ID
+          $env:REFORGE_E2E_SOURCE_VM = $env:SOURCE_VM
+          $env:REFORGE_E2E_TARGET_VM = $env:TARGET_VM
+          $env:REFORGE_E2E_SOURCE_CHECKPOINT = $env:SOURCE_CHECKPOINT
+          $env:REFORGE_E2E_TARGET_CHECKPOINT = $env:TARGET_CHECKPOINT
+          $harness = Join-Path $env:RUNNER_TEMP 'reforge-windows-e2e-tests.exe'
+          rustc --edition 2024 --test (Join-Path $env:GITHUB_WORKSPACE 'tests\integration\windows_e2e.rs') -o $harness
+          & $harness --ignored --exact hyper_v_source_to_target_e2e --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Hyper-V E2E harness failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Upload redacted E2E reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reforge-windows-e2e-${{ github.run_id }}
+          path: ${{ inputs.artifact_root }}
+          if-no-files-found: error
+
+      - name: Remove protected E2E credential material
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'reforge-e2e-password.txt') -Force -ErrorAction SilentlyContinue

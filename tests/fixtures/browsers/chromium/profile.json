@@ -1,0 +1,21 @@
+{
+  "profile": {
+    "name": "Default"
+  },
+  "extensions": {
+    "settings": {
+      "abcdefghijklmnopabcdefghijklmnop": {
+        "manifest": {
+          "name": "Fixture Formatter",
+          "version": "1.2.3"
+        }
+      },
+      "nopqrstuvwxyzabcdefnopqrstuvwxyzab": {
+        "manifest": {
+          "name": "Fixture Linter",
+          "version": "4.5.6"
+        }
+      }
+    }
+  }
+}

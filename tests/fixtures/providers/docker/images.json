@@ -1,0 +1,16 @@
+[
+  {
+    "Repository": "alpine",
+    "Tag": "3.20",
+    "ID": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "Size": "1.5MB",
+    "CreatedAt": "2025-01-02 03:04:05 +0000 UTC"
+  },
+  {
+    "Repository": "example/app",
+    "Tag": "latest",
+    "ID": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "SizeBytes": 33554432,
+    "CreatedAt": "2025-01-01 00:00:00 +0000 UTC"
+  }
+]

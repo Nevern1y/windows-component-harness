@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "scope": "local_machine",
+      "view": "view_64",
+      "key_path": "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Reforge.Editor",
+      "values": [
+        { "name": "DisplayName", "type": "REG_SZ", "value": "Reforge Editor" },
+        { "name": "DisplayVersion", "type": "REG_SZ", "value": "1.2.3" },
+        { "name": "Publisher", "type": "REG_SZ", "value": "Reforge Labs" },
+        { "name": "InstallLocation", "type": "REG_EXPAND_SZ", "value": "%ProgramFiles%\\Reforge" }
+      ]
+    },
+    {
+      "scope": "local_machine",
+      "view": "view_32",
+      "key_path": "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Reforge.Editor32",
+      "values": [
+        { "name": "DisplayName", "type": "REG_SZ", "value": "Reforge Editor (32-bit)" },
+        { "name": "DisplayVersion", "type": "REG_SZ", "value": "1.1.0" }
+      ]
+    },
+    {
+      "scope": "current_user",
+      "view": "view_64",
+      "key_path": "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Reforge.UserTool",
+      "values": [
+        { "name": "DisplayName", "type": "REG_SZ", "value": "Reforge User Tool" },
+        { "name": "OpaqueState", "type": "REG_BINARY", "value_hex": "0001ff7f" },
+        { "name": "MalformedText", "type": "REG_SZ", "malformed": true }
+      ]
+    }
+  ],
+  "errors": [
+    { "scope": "local_machine", "view": "view_64", "key_path": "...\\Denied", "win32_code": 5 },
+    { "scope": "current_user", "view": "view_32", "key_path": "...\\Missing", "win32_code": 2 }
+  ]
+}

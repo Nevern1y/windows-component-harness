@@ -1,0 +1,493 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing or new v-prefixed release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.98.0
+  NODE_VERSION: 24.15.0
+  PNPM_VERSION: 10.33.2
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  verify-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Typeshare CLI
+        run: cargo install typeshare-cli --version 1.13.4 --locked
+
+      - name: Generate TypeScript DTOs
+        run: pnpm --dir ui generate:types
+
+      - name: Check generated TypeScript DTOs
+        shell: pwsh
+        run: git diff --exit-code -- ui/src/lib/generated.ts
+
+      - name: Build UI
+        run: pnpm run ui:build
+
+      - name: Check UI
+        run: pnpm run ui:check
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build Rust workspace
+        run: cargo build --workspace --locked
+
+      - name: Run Rust lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+  verify-supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare release reports
+        run: mkdir -p artifacts
+
+      - name: Audit Rust dependencies
+        id: rust_audit
+        uses: actions-rust-lang/audit@v1
+        continue-on-error: true
+        with:
+          # Tauri's cross-platform GTK graph emits unmaintained warnings; vulnerabilities still fail the action.
+          denyWarnings: false
+          createIssues: false
+
+      - name: Capture Rust advisory report
+        id: rust_report
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          cargo audit --json > artifacts/cargo-audit.json
+          status=$?
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Audit frontend dependencies
+        id: pnpm_audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          pnpm audit --audit-level high --json > artifacts/pnpm-audit.json
+          status=$?
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Generate Rust license report
+        id: cargo_licenses
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > artifacts/cargo-metadata.json
+          jq '[.packages[] | {name, version, source, license, license_file}]' \
+            artifacts/cargo-metadata.json > artifacts/cargo-licenses.json
+          if jq -e 'any(.[]; ((.license == null or .license == "") and (.license_file == null or .license_file == "")))' \
+            artifacts/cargo-licenses.json > /dev/null; then
+            echo 'A Cargo dependency is missing license metadata.' >&2
+            exit 1
+          fi
+
+      - name: Generate CycloneDX SBOM
+        id: sbom
+        uses: anchore/sbom-action@v0.24.2
+        continue-on-error: true
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: artifacts/reforge-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Upload release reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reforge-release-supply-chain-${{ github.run_id }}
+          path: artifacts
+          if-no-files-found: error
+
+      - name: Enforce release supply-chain gates
+        if: always()
+        shell: bash
+        run: |
+          for report in artifacts/cargo-audit.json artifacts/pnpm-audit.json artifacts/cargo-licenses.json artifacts/reforge-sbom.cdx.json; do
+            if [[ ! -s "$report" ]]; then
+              echo "Missing or empty supply-chain report: $report" >&2
+              exit 1
+            fi
+          done
+          if [[ '${{ steps.rust_audit.outcome }}' != 'success' || \
+                '${{ steps.rust_report.outputs.exit_code }}' != '0' || \
+                '${{ steps.pnpm_audit.outputs.exit_code }}' != '0' || \
+                '${{ steps.cargo_licenses.outcome }}' != 'success' || \
+                '${{ steps.sbom.outcome }}' != 'success' ]]; then
+            echo 'At least one release supply-chain gate failed.' >&2
+            exit 1
+          fi
+
+  package:
+    needs: [verify-windows, verify-supply-chain]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Require a v-prefixed release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Release tag '$env:RELEASE_TAG' is not a valid v-prefixed semantic version."
+          }
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download verified supply-chain reports
+        uses: actions/download-artifact@v4
+        with:
+          name: reforge-release-supply-chain-${{ github.run_id }}
+          path: release-assets/reports
+
+      - name: Build and stage x64 CLI artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build -p reforge-cli --release --target $env:WINDOWS_TARGET --locked
+          $cli = (Resolve-Path "target\$env:WINDOWS_TARGET\release\reforge.exe").Path
+          $bytes = [System.IO.File]::ReadAllBytes($cli)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw "CLI artifact is not x86_64 (PE machine 0x$('{0:x4}' -f $machine))."
+          }
+          $version = (& $cli --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            throw 'x64 CLI --version smoke test failed.'
+          }
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          $stagedCli = Join-Path $env:GITHUB_WORKSPACE "release-assets\reforge-$env:WINDOWS_TARGET.exe"
+          Copy-Item -LiteralPath $cli -Destination $stagedCli -Force
+
+      - name: Require protected signing credentials and write release config
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY) -or
+              [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PUBLIC_KEY) -or
+              [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw 'TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PUBLIC_KEY, and TAURI_SIGNING_PRIVATE_KEY_PASSWORD repository secrets are required.'
+          }
+          $releaseConfig = [ordered]@{
+            bundle = [ordered]@{
+              createUpdaterArtifacts = $true
+            }
+            plugins = [ordered]@{
+              updater = [ordered]@{
+                pubkey = $env:TAURI_SIGNING_PUBLIC_KEY
+                endpoints = @(
+                  "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json"
+                )
+              }
+            }
+          }
+          $configPath = Join-Path $env:GITHUB_WORKSPACE 'tauri.release.conf.json'
+          $releaseConfig | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+
+      - name: Sign staged CLI with Tauri updater key
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $cli = (Resolve-Path "release-assets\reforge-$env:WINDOWS_TARGET.exe").Path
+          pnpm dlx @tauri-apps/cli@2.11.4 signer sign --password $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD $cli
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$cli.sig")) {
+            throw 'Tauri signer did not produce the CLI signature.'
+          }
+
+      - name: Build signed desktop artifacts into a draft release
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tauriScript: pnpm dlx @tauri-apps/cli@2.11.4
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Reforge ${{ env.RELEASE_TAG }}
+          releaseBody: Signed Windows x64 desktop and CLI artifacts. See SHA256SUMS, SBOM, and security reports.
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          uploadUpdaterSignatures: true
+          uploadPlainBinary: false
+          retryAttempts: 2
+          args: --target x86_64-pc-windows-msvc --config ../tauri.release.conf.json
+
+      - name: Verify updater manifest, signatures, architecture, and CLI-only boundary
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --exit-code -- Cargo.lock pnpm-lock.yaml
+          $nsisDir = Join-Path $env:GITHUB_WORKSPACE "target\$env:WINDOWS_TARGET\release\bundle\nsis"
+          $updateZips = @(Get-ChildItem -LiteralPath $nsisDir -Filter '*.nsis.zip' -File)
+          if ($updateZips.Count -ne 1) {
+            throw "Expected exactly one signed NSIS updater archive, found $($updateZips.Count)."
+          }
+          $updateZip = $updateZips[0]
+          $updateSigPath = "$($updateZip.FullName).sig"
+          if (-not (Test-Path -LiteralPath $updateSigPath -PathType Leaf)) {
+            throw 'Signed NSIS updater archive is missing its .sig file.'
+          }
+          $latestPath = Join-Path $env:GITHUB_WORKSPACE 'latest.json'
+          if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
+            throw 'Tauri action did not generate latest.json.'
+          }
+          $manifest = Get-Content -LiteralPath $latestPath -Raw | ConvertFrom-Json
+          if ([string]::IsNullOrWhiteSpace($manifest.version) -or $null -eq $manifest.platforms) {
+            throw 'Updater manifest is missing version or platform data.'
+          }
+          $platformNames = @($manifest.platforms.PSObject.Properties | ForEach-Object Name)
+          if ($platformNames -notcontains 'windows-x86_64') {
+            throw 'Updater manifest has no windows-x86_64 entry.'
+          }
+          $wrongArchitectureNames = @($platformNames | Where-Object { $_ -match '^windows-(aarch64|i686|armv7)(-|$)' })
+          if ($wrongArchitectureNames.Count -ne 0) {
+            throw "Updater manifest contains unsupported architecture entries: $($wrongArchitectureNames -join ', ')."
+          }
+          $manifestEntry = $manifest.platforms.PSObject.Properties['windows-x86_64'].Value
+          $signatureText = (Get-Content -LiteralPath $updateSigPath -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($manifestEntry.signature) -or
+              $manifestEntry.signature.Trim() -ne $signatureText) {
+            throw 'Updater manifest signature does not match the generated NSIS archive signature.'
+          }
+          if ($manifestEntry.url -notmatch '^https://') {
+            throw 'Updater manifest URL is not HTTPS.'
+          }
+
+          $publicPath = Join-Path $env:RUNNER_TEMP 'reforge-updater.pub'
+          $rawSignaturePath = Join-Path $env:RUNNER_TEMP 'reforge-updater.minisig'
+          $invalidSignaturePath = Join-Path $env:RUNNER_TEMP 'reforge-updater-invalid.minisig'
+          [System.IO.File]::WriteAllBytes(
+            $publicPath,
+            [Convert]::FromBase64String($env:TAURI_SIGNING_PUBLIC_KEY.Trim())
+          )
+          $rawSignatureBytes = [Convert]::FromBase64String($signatureText)
+          [System.IO.File]::WriteAllBytes($rawSignaturePath, $rawSignatureBytes)
+          $rawSignatureText = [System.Text.Encoding]::UTF8.GetString($rawSignatureBytes)
+          $signatureLines = $rawSignatureText -split "`r?`n"
+          $mutated = $false
+          for ($index = 0; $index -lt $signatureLines.Count; $index++) {
+            if ($signatureLines[$index] -match '^[A-Za-z0-9+/=]+$' -and $signatureLines[$index].Length -gt 0) {
+              $characters = $signatureLines[$index].ToCharArray()
+              $characters[0] = if ($characters[0] -eq 'A') { 'B' } else { 'A' }
+              $signatureLines[$index] = -join $characters
+              $mutated = $true
+              break
+            }
+          }
+          if (-not $mutated) {
+            throw 'Could not construct the invalid updater signature test vector.'
+          }
+          [System.IO.File]::WriteAllText(
+            $invalidSignaturePath,
+            ($signatureLines -join "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          cargo install rsign2 --version 0.6.6 --locked
+          $null = & rsign verify $updateZip.FullName -p $publicPath -x $rawSignaturePath -q 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Valid updater signature was rejected by the independent Minisign verifier.'
+          }
+          $null = & rsign verify $updateZip.FullName -p $publicPath -x $invalidSignaturePath -q 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            throw 'Invalid updater signature was accepted.'
+          }
+
+          function Get-UpdaterPlatform([string] $architecture) {
+            $key = "windows-$architecture"
+            $property = $manifest.platforms.PSObject.Properties[$key]
+            if ($null -eq $property) {
+              throw "No signed updater is published for architecture '$architecture'."
+            }
+            return $property.Value
+          }
+          $null = Get-UpdaterPlatform 'x86_64'
+          $wrongArchitectureAccepted = $false
+          try {
+            $null = Get-UpdaterPlatform 'aarch64'
+            $wrongArchitectureAccepted = $true
+          }
+          catch {
+          }
+          if ($wrongArchitectureAccepted) {
+            throw 'Updater manifest accepted a wrong-architecture update.'
+          }
+
+          $desktopSource = Get-Content -LiteralPath 'src-tauri\src\lib.rs' -Raw
+          if ($desktopSource -notmatch 'CLI_ONLY_BUILD:\s*bool\s*=\s*true' -or
+              $desktopSource -match 'invoke_handler|tauri_plugin_dialog::init') {
+            throw 'Desktop release is not hard-locked to the CLI-only runtime boundary.'
+          }
+          $capability = Get-Content -LiteralPath 'src-tauri\capabilities\main.json' -Raw | ConvertFrom-Json
+          if (@($capability.permissions).Count -ne 0 -or
+              @($capability.platforms) -notcontains 'windows') {
+            throw 'Desktop release capability grants unexpected access.'
+          }
+          $stagedCli = Join-Path $env:GITHUB_WORKSPACE "release-assets\reforge-$env:WINDOWS_TARGET.exe"
+          if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf) -or
+              -not (Test-Path -LiteralPath "$stagedCli.sig" -PathType Leaf)) {
+            throw 'CLI-only release artifact or its signature is missing.'
+          }
+
+      - name: Generate artifact hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nsisDir = Join-Path $env:GITHUB_WORKSPACE "target\$env:WINDOWS_TARGET\release\bundle\nsis"
+          $desktopFiles = @(Get-ChildItem -LiteralPath $nsisDir -File | Where-Object { $_.Name -notmatch 'uninstall' })
+          $cliFiles = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'release-assets') -File -Recurse)
+          $latest = Get-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'latest.json')
+          $hashFiles = @($desktopFiles + $cliFiles + $latest)
+          $records = @(
+            $hashFiles |
+              Sort-Object FullName -Unique |
+              ForEach-Object {
+                [ordered]@{
+                  path = $_.Name
+                  bytes = $_.Length
+                  sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+              }
+          )
+          $records | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'release-assets\SHA256SUMS.json' -Encoding utf8NoBOM
+          $lines = @($records | ForEach-Object { "$($_.sha256)  $($_.path)" })
+          [System.IO.File]::WriteAllLines(
+            (Join-Path $env:GITHUB_WORKSPACE 'release-assets\SHA256SUMS.txt'),
+            $lines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload CLI, hashes, SBOM, license, and security reports to draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'release-assets') -File -Recurse |
+            ForEach-Object { $_.FullName })
+          if ($files.Count -eq 0) {
+            throw 'No supplemental release assets were staged.'
+          }
+          & gh release upload $env:RELEASE_TAG @files --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Supplemental release asset upload failed.'
+          }
+
+      - name: Publish verified draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & gh release edit $env:RELEASE_TAG --draft=false
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Verified draft release could not be published.'
+          }
+
+      - name: Remove ephemeral release configuration
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'tauri.release.conf.json'), (Join-Path $env:GITHUB_WORKSPACE 'latest.json') -Force -ErrorAction SilentlyContinue

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": ["Bash(git status)"]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_API_KEY": "fixture-settings-secret"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo fixture-hook"
+          }
+        ]
+      }
+    ]
+  }
+}

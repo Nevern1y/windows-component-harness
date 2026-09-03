@@ -1,0 +1,1500 @@
+{
+  "$defs": {
+    "AccountScope": {
+      "enum": [
+        "USER",
+        "MACHINE"
+      ],
+      "type": "string"
+    },
+    "Architecture": {
+      "enum": [
+        "X86",
+        "X64",
+        "ARM64",
+        "NEUTRAL",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "ArtifactId": {
+      "description": "Opaque artifact identifier. Its value is validated for safe wire transport.",
+      "type": "string"
+    },
+    "ArtifactPolicy": {
+      "enum": [
+        "CONFIG",
+        "DATA",
+        "EXPORT",
+        "PORTABLE_BINARY",
+        "LARGE_OPT_IN",
+        "SECRET_REFERENCE",
+        "MANUAL"
+      ],
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_type": {
+          "$ref": "#/$defs/ContentType"
+        },
+        "id": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "object": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy": {
+          "$ref": "#/$defs/ArtifactPolicy"
+        },
+        "scope": {
+          "$ref": "#/$defs/ConfigScope"
+        },
+        "size_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_path": {
+          "$ref": "#/$defs/PathTokenInput"
+        }
+      },
+      "required": [
+        "id",
+        "source_path",
+        "scope",
+        "size_bytes",
+        "content_type",
+        "policy"
+      ],
+      "type": "object"
+    },
+    "Compatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "required_architecture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Architecture"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_os": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requires_docker": {
+          "type": "boolean"
+        },
+        "requires_elevation": {
+          "type": "boolean"
+        },
+        "requires_provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requires_runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComponentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requires_wsl": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requires_elevation",
+        "requires_wsl",
+        "requires_docker"
+      ],
+      "type": "object"
+    },
+    "Component": {
+      "additionalProperties": true,
+      "properties": {
+        "architecture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Architecture"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "type": "array"
+        },
+        "compatibility": {
+          "$ref": "#/$defs/Compatibility"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/DependencyEdge"
+          },
+          "type": "array"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComponentKind"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publisher": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Publisher"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "restore": {
+          "$ref": "#/$defs/RestoreDescriptor"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionMetadata"
+        },
+        "verification": {
+          "items": {
+            "$ref": "#/$defs/VerificationRule"
+          },
+          "type": "array"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VersionValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "identity",
+        "display_name",
+        "evidence",
+        "confidence",
+        "dependencies",
+        "artifacts",
+        "restore",
+        "compatibility",
+        "verification",
+        "selection"
+      ],
+      "type": "object"
+    },
+    "ComponentId": {
+      "description": "Stable component identity: `cmp_` followed by lowercase unpadded Base32 BLAKE3-256.",
+      "type": "string"
+    },
+    "ComponentKind": {
+      "enum": [
+        "APPLICATION",
+        "PACKAGE",
+        "RUNTIME",
+        "TOOL",
+        "HARNESS",
+        "MCP_SERVER",
+        "SKILL",
+        "AGENT",
+        "HOOK",
+        "PLUGIN",
+        "BROWSER",
+        "BROWSER_PROFILE",
+        "EDITOR",
+        "EXTENSION",
+        "CONFIGURATION",
+        "DATA_ARTIFACT",
+        "SECRET_REFERENCE",
+        "ENVIRONMENT_VARIABLE",
+        "SYSTEM_FEATURE",
+        "SERVICE",
+        "SCHEDULED_TASK",
+        "SHELL",
+        "PORTABLE_BINARY",
+        "WSL_DISTRIBUTION",
+        "DOCKER_CONTEXT",
+        "DOCKER_IMAGE",
+        "DOCKER_VOLUME",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "Confidence": {
+      "enum": [
+        "CONFIRMED",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "ConfigScope": {
+      "enum": [
+        "PROCESS",
+        "USER",
+        "SYSTEM",
+        "PROJECT",
+        "MANAGED"
+      ],
+      "type": "string"
+    },
+    "ContentType": {
+      "enum": [
+        "UTF8_TEXT",
+        "JSON",
+        "JSONC",
+        "TOML",
+        "BINARY",
+        "ARCHIVE",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "DependencyEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceId"
+          },
+          "type": "array"
+        },
+        "from": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "kind": {
+          "$ref": "#/$defs/DependencyKind"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "to": {
+          "$ref": "#/$defs/ComponentId"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "required",
+        "evidence",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "DependencyKind": {
+      "enum": [
+        "REQUIRED_RUNTIME",
+        "REQUIRED_PACKAGE",
+        "INSTALLED_THROUGH",
+        "CONFIGURES",
+        "USES_SECRET",
+        "OPTIONAL_FEATURE",
+        "PROVIDES_EXECUTABLE",
+        "CONTAINS",
+        "RESTORES_BEFORE",
+        "VERIFIES_WITH",
+        "RELATED_ONLY"
+      ],
+      "type": "string"
+    },
+    "DriveFact": {
+      "additionalProperties": false,
+      "properties": {
+        "filesystem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token"
+      ],
+      "type": "object"
+    },
+    "DriveFreeSpace": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "independent_group": {
+          "type": "string"
+        },
+        "locator": {
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EvidenceSource"
+        },
+        "strength": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "locator",
+        "observed_at",
+        "summary",
+        "strength",
+        "independent_group"
+      ],
+      "type": "object"
+    },
+    "EvidenceId": {
+      "description": "Opaque evidence identifier. Its value is validated for safe wire transport.\nOpaque provider identifier. Its value is validated for safe wire transport.",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "strength": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "strength"
+      ],
+      "type": "object"
+    },
+    "EvidenceSource": {
+      "enum": [
+        "REGISTRY",
+        "APP_PATHS",
+        "SHORTCUT",
+        "FILE_METADATA",
+        "AUTHENTICODE",
+        "WIN_GET",
+        "CHOCOLATEY",
+        "SCOOP",
+        "NPM",
+        "PNPM",
+        "YARN",
+        "BUN",
+        "PYTHON",
+        "RUST",
+        "GO",
+        "DOTNET",
+        "POWER_SHELL",
+        "WSL",
+        "DOCKER",
+        "BROWSER",
+        "EDITOR",
+        "HARNESS",
+        "USER_SELECTED",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "HostFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "account_scope": {
+          "$ref": "#/$defs/AccountScope"
+        },
+        "architecture": {
+          "$ref": "#/$defs/Architecture"
+        },
+        "drives": {
+          "items": {
+            "$ref": "#/$defs/DriveFact"
+          },
+          "type": "array"
+        },
+        "elevated": {
+          "type": "boolean"
+        },
+        "free_bytes": {
+          "items": {
+            "$ref": "#/$defs/DriveFreeSpace"
+          },
+          "type": "array"
+        },
+        "known_folders": {
+          "items": {
+            "$ref": "#/$defs/PathTokenInput"
+          },
+          "type": "array"
+        },
+        "os_build": {
+          "type": "string"
+        },
+        "os_version": {
+          "type": "string"
+        },
+        "sid_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "os_version",
+        "os_build",
+        "architecture",
+        "elevated",
+        "account_scope",
+        "known_folders",
+        "drives",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "executable_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executable_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity_quality": {
+          "$ref": "#/$defs/IdentityQuality"
+        },
+        "install_role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "package_family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_package": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/ProviderId"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "provider_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publisher": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "identity_quality"
+      ],
+      "type": "object"
+    },
+    "IdentityQuality": {
+      "enum": [
+        "PROVIDER",
+        "PACKAGE_FAMILY",
+        "SIGNED_PRODUCT",
+        "PRODUCT",
+        "LOCAL"
+      ],
+      "type": "string"
+    },
+    "KnownFolderToken": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "USER_PROFILE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ROAMING_APP_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "LOCAL_APP_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_DATA",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_FILES",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "PROGRAM_FILES_X86",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "START_MENU",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "STARTUP",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DESKTOP",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DOCUMENTS",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "USER_SELECTED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ObjectId": {
+      "description": "Content-addressed object identity: `obj_` followed by lowercase hexadecimal BLAKE3-256.",
+      "type": "string"
+    },
+    "PackageGraph": {
+      "additionalProperties": false,
+      "properties": {
+        "components": {
+          "items": {
+            "$ref": "#/$defs/Component"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/DependencyEdge"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "components",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "PackageSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Architecture"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "installer_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "source": {
+          "format": "uri",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_identifier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "id"
+      ],
+      "type": "object"
+    },
+    "PathTokenInput": {
+      "additionalProperties": false,
+      "properties": {
+        "relative": {
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/KnownFolderToken"
+        }
+      },
+      "required": [
+        "root",
+        "relative"
+      ],
+      "type": "object"
+    },
+    "Portability": {
+      "enum": [
+        "PORTABLE",
+        "SUPPORTED_EXPORT",
+        "SYNC_RESTORABLE",
+        "PARTIALLY_PORTABLE",
+        "APPLICATION_BOUND",
+        "USER_BOUND",
+        "MACHINE_BOUND",
+        "REAUTH_REQUIRED",
+        "UNSUPPORTED",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "type": "string"
+        },
+        "adapter_version": {
+          "type": "string"
+        },
+        "observed_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "package_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_url": {
+          "format": "uri",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_version"
+      ],
+      "type": "object"
+    },
+    "ProviderId": {
+      "description": "Opaque provider identifier. Its value is validated for safe wire transport.",
+      "type": "string"
+    },
+    "Publisher": {
+      "additionalProperties": false,
+      "properties": {
+        "certificate_thumbprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "RestoreDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "alternatives": {
+          "items": {
+            "$ref": "#/$defs/RestoreStrategy"
+          },
+          "type": "array"
+        },
+        "portability": {
+          "$ref": "#/$defs/Portability"
+        },
+        "primary": {
+          "$ref": "#/$defs/RestoreStrategy"
+        },
+        "rationale": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requires_elevation": {
+          "type": "boolean"
+        },
+        "requires_user_action": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "primary",
+        "alternatives",
+        "portability",
+        "requires_elevation",
+        "requires_user_action",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "RestoreStrategy": {
+      "enum": [
+        "REINSTALL",
+        "CONFIG_PORTABLE",
+        "DATA_PORTABLE",
+        "EXPORT_IMPORT",
+        "PORTABLE_BINARY",
+        "SECRET_EXPORTABLE",
+        "REAUTH_REQUIRED",
+        "MACHINE_BOUND",
+        "PARTIAL",
+        "MANUAL",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "RunId": {
+      "description": "UUIDv7 run identifier used to correlate resumable operations and journal events.",
+      "type": "string"
+    },
+    "SafeValueRef": {
+      "oneOf": [
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "LITERAL_NON_SECRET",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/ComponentId"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "SECRET_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "REDACTED_UNKNOWN",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelectionMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "recommended": {
+          "type": "boolean"
+        },
+        "score": {
+          "format": "int16",
+          "maximum": 32767,
+          "minimum": -32768,
+          "type": "integer"
+        },
+        "selected_by_default": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recommended",
+        "score",
+        "selected_by_default",
+        "sensitive",
+        "size_bytes"
+      ],
+      "type": "object"
+    },
+    "VerificationRule": {
+      "oneOf": [
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "package": {
+                  "$ref": "#/$defs/PackageSpec"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderId"
+                }
+              },
+              "required": [
+                "provider",
+                "package"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "PROVIDER_IDENTITY",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "destination": {
+                  "$ref": "#/$defs/PathTokenInput"
+                },
+                "object": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ObjectId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "FILE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "destination": {
+                  "$ref": "#/$defs/PathTokenInput"
+                },
+                "publisher": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Publisher"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "version": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/VersionValue"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "FILE_VERSION",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "content_type": {
+                  "$ref": "#/$defs/ContentType"
+                },
+                "destination": {
+                  "$ref": "#/$defs/PathTokenInput"
+                }
+              },
+              "required": [
+                "destination",
+                "content_type"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "CONFIG_PARSES",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "expected": {
+                  "$ref": "#/$defs/SafeValueRef"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "scope": {
+                  "$ref": "#/$defs/ConfigScope"
+                }
+              },
+              "required": [
+                "scope",
+                "name",
+                "expected"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "config": {
+                  "$ref": "#/$defs/PathTokenInput"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "MCP_REGISTRATION",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "distro": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "distro"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "WSL_STATE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "identity": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/$defs/ComponentKind"
+                }
+              },
+              "required": [
+                "kind",
+                "identity"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "DOCKER_OBJECT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "profile": {
+                  "$ref": "#/$defs/PathTokenInput"
+                }
+              },
+              "required": [
+                "profile"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "BROWSER_ARTIFACT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "secret": {
+                  "$ref": "#/$defs/ComponentId"
+                }
+              },
+              "required": [
+                "secret"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "SECURE_TARGET",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "VersionValue": {
+      "additionalProperties": false,
+      "properties": {
+        "normalized": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raw": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raw"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "captured_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "type": "array"
+    },
+    "format_version": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "graph": {
+      "$ref": "#/$defs/PackageGraph"
+    },
+    "host": {
+      "$ref": "#/$defs/HostFacts"
+    },
+    "scan_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "format_version",
+    "scan_id",
+    "captured_at",
+    "host",
+    "graph",
+    "evidence",
+    "warnings"
+  ],
+  "title": "Inventory",
+  "type": "object"
+}

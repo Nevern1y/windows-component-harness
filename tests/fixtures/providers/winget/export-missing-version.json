@@ -1,0 +1,19 @@
+{
+  "$schema": "https://aka.ms/winget-packages.schema.2.0.json",
+  "Sources": [
+    {
+      "Packages": [
+        {
+          "PackageIdentifier": "Contoso.Editor"
+        }
+      ],
+      "SourceDetails": {
+        "Argument": "https://packages.example.test/index",
+        "Identifier": "Contoso.Private.Source",
+        "Name": "private-source",
+        "Type": "Microsoft.PreIndexed.Package"
+      }
+    }
+  ],
+  "WinGetVersion": "1.9.25200"
+}

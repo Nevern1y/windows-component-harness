@@ -1,0 +1,16 @@
+[
+  {
+    "Name": "default",
+    "Description": "Current DOCKER_HOST based configuration",
+    "Current": "*",
+    "DockerEndpoint": "npipe:////./pipe/docker_engine",
+    "Orchestrator": ""
+  },
+  {
+    "Name": "remote",
+    "Description": "Reviewed remote context",
+    "Current": "",
+    "DockerEndpoint": "tcp://user:source-secret@docker.example:2376?token=source-secret",
+    "Orchestrator": "swarm"
+  }
+]

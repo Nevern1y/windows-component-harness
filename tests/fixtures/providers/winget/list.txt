@@ -1,0 +1,4 @@
+Name                            Id                              Version
+--------------------------------------------------------------------------------
+Git                             Git.Git                         2.47.1
+Visual Studio Code              Microsoft.VisualStudioCode      1.96.2

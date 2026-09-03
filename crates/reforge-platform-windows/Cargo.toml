@@ -1,0 +1,18 @@
+[package]
+name = "reforge-platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+reforge-domain.workspace = true
+reforge-elevation-helper.workspace = true
+blake3.workspace = true
+windows.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true

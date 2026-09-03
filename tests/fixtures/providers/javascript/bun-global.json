@@ -1,0 +1,13 @@
+{
+  "packages": [
+    {
+      "name": "bun-tool",
+      "version": "0.8.0",
+      "dependencies": {
+        "bun-shared": {
+          "version": "4.0.1"
+        }
+      }
+    }
+  ]
+}

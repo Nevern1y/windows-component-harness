@@ -1,0 +1,41 @@
+{
+  "entries": [
+    {
+      "scope": "current_user",
+      "view": "view_64",
+      "key_path": "Environment",
+      "values": [
+        { "name": "Path", "type": "REG_EXPAND_SZ", "value": "%UserProfile%\\bin;%Path%" },
+        { "name": "REFORGE_MODE", "type": "REG_SZ", "value": "developer" },
+        { "name": "API_TOKEN", "type": "REG_SZ", "redacted": "<REDACTED>" }
+      ]
+    },
+    {
+      "scope": "local_machine",
+      "view": "view_32",
+      "key_path": "System\\CurrentControlSet\\Control\\Session Manager\\Environment",
+      "values": [
+        { "name": "Path", "type": "REG_EXPAND_SZ", "value": "%SystemRoot%\\System32" },
+        { "name": "ProgramData", "type": "REG_EXPAND_SZ", "value": "%SystemDrive%\\ProgramData" }
+      ]
+    },
+    {
+      "scope": "local_machine",
+      "view": "view_64",
+      "key_path": "System\\CurrentControlSet\\Control\\Session Manager\\Environment",
+      "values": [
+        { "name": "Path", "type": "REG_EXPAND_SZ", "value": "%SystemRoot%\\System32" }
+      ]
+    },
+    {
+      "scope": "current_user",
+      "view": "view_32",
+      "key_path": "Environment",
+      "values": []
+    }
+  ],
+  "errors": [
+    { "scope": "local_machine", "view": "view_32", "key_path": "Environment", "win32_code": 5 },
+    { "scope": "current_user", "view": "view_64", "key_path": "Missing", "win32_code": 2 }
+  ]
+}

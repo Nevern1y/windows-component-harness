@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["server.js", "--api-key", "fixture-mcp-argument-secret"],
+      "env": {
+        "CONTEXT7_API_KEY": "fixture-mcp-env-secret",
+        "NODE_ENV": "production"
+      }
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.invalid/v1",
+      "headers": {
+        "Authorization": "Bearer fixture-header-secret"
+      }
+    }
+  }
+}

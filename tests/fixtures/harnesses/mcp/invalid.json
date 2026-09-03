@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "broken": {
+      "type": "grpc",
+      "command": "npm"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "remote": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.invalid/v1",
+      "headers": {
+        "Authorization": "Bearer fixture-header-secret",
+        "X-Client": "reforge-fixture"
+      }
+    }
+  }
+}

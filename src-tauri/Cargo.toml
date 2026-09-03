@@ -1,0 +1,31 @@
+[package]
+name = "reforge-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[lib]
+name = "reforge_desktop_lib"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib", "staticlib"]
+
+[[bin]]
+name = "reforge-desktop"
+path = "src/main.rs"
+
+[dependencies]
+reforge-cli.workspace = true
+reforge-domain.workspace = true
+reforge-package.workspace = true
+reforge-platform-windows.workspace = true
+reforge-restore.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true

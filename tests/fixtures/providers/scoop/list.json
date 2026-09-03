@@ -1,0 +1,10 @@
+{
+  "apps": [
+    { "Source": "main", "Name": "git", "Version": "2.47.1" },
+    { "Source": "extras", "Name": "vscode", "Version": "1.96.2" }
+  ],
+  "buckets": [
+    { "Name": "main", "Source": "https://github.com/ScoopInstaller/Main" },
+    { "Name": "extras", "Source": "https://github.com/ScoopInstaller/Extras" }
+  ]
+}

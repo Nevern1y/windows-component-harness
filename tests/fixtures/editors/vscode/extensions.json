@@ -1,0 +1,14 @@
+[
+  {
+    "identifier": {
+      "id": "ms-python.python"
+    },
+    "version": "2025.10.0"
+  },
+  {
+    "identifier": {
+      "id": "fixture.tools"
+    },
+    "version": "1.0.0"
+  }
+]

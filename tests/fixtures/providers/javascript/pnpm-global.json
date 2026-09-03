@@ -1,0 +1,18 @@
+[
+  {
+    "name": "global",
+    "version": "1.0.0",
+    "dependencies": {
+      "pnpm-tool": {
+        "version": "3.1.0",
+        "resolved": "https://registry.npmjs.org/pnpm-tool/-/pnpm-tool-3.1.0.tgz",
+        "dependencies": {
+          "@scope/shared": {
+            "version": "0.9.1",
+            "resolved": "https://registry.npmjs.org/@scope/shared/-/shared-0.9.1.tgz"
+          }
+        }
+      }
+    }
+  }
+]
