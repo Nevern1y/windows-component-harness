@@ -6,9 +6,11 @@ use std::{collections::BTreeMap, io::Write};
 
 use async_trait::async_trait;
 use reforge_domain::{
-    ContentType, FileMode, KnownFolderToken, MergePolicy, ObjectEntry, ObjectId, ObjectIndex,
-    Operation, OperationId, OperationKind, Precondition, RunId,
+    ChunkRef, ContentType, FileManifest, FileMode, KnownFolderToken, MergePolicy, ObjectEntry,
+    ObjectId, ObjectIndex, Operation, OperationId, OperationKind, Precondition, ReforgeErrorCode,
+    RunId,
 };
+use reforge_package::canonicalize;
 use reforge_platform_windows::{CancellationToken, KnownFolderMap};
 use reforge_restore::{
     ConfigRestoreHandler, ExecutionContext, ObjectSource, OperationDisposition, OperationHandler,
@@ -110,9 +112,43 @@ enum ConfigKind {
 fn context<'a>(
     target: &'a reforge_domain::TargetFacts,
     index: &'a ObjectIndex,
-    source: &'a MemoryObjectSource,
+    source: &'a dyn ObjectSource,
 ) -> ExecutionContext<'a> {
     ExecutionContext::new(target, index).with_object_source(source)
+}
+
+struct MappedObjectSource {
+    objects: BTreeMap<ObjectId, (ObjectEntry, Vec<u8>)>,
+}
+
+impl ObjectSource for MappedObjectSource {
+    fn copy_verified_object(
+        &self,
+        object: &ObjectId,
+        output: &mut dyn Write,
+    ) -> RestoreResult<ObjectEntry> {
+        let (entry, bytes) = self.objects.get(object).ok_or_else(|| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::PackageNotFound,
+                "fixture object is missing",
+                None,
+                None,
+                None,
+                Some("manifest-config-test"),
+            )
+        })?;
+        output.write_all(bytes).map_err(|error| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::OperationFailed,
+                "fixture object write failed",
+                Some(&error.to_string()),
+                None,
+                None,
+                Some("manifest-config-test"),
+            )
+        })?;
+        Ok(entry.clone())
+    }
 }
 
 #[tokio::test]
@@ -388,6 +424,84 @@ async fn parseable_config_is_not_claimed_satisfied_without_merge_evidence() {
         .await
         .expect("satisfaction check");
     assert!(matches!(satisfaction, OperationSatisfaction::NotSatisfied));
+}
+
+#[tokio::test]
+async fn json_merge_reads_the_manifest_payload_instead_of_manifest_json() {
+    let fixture = FixtureRoot::new("handlers-config-manifest").expect("fixture root");
+    fixture
+        .write_tokenized(KnownFolderToken::UserProfile, "config.json", br#"{}"#)
+        .expect("target config");
+    let payload = br#"{"from_payload":true}"#.to_vec();
+    let chunk_id = ObjectId::from_content(&payload);
+    let chunk_entry = ObjectEntry {
+        id: chunk_id.clone(),
+        uncompressed_bytes: payload.len() as u64,
+        compressed_bytes: payload.len() as u64,
+        content_type: ContentType::Json,
+    };
+    let manifest = FileManifest {
+        size_bytes: payload.len() as u64,
+        chunks: vec![ChunkRef {
+            id: chunk_id.clone(),
+            uncompressed_bytes: payload.len() as u64,
+        }],
+        content_type: ContentType::Json,
+        attributes: 0,
+    };
+    let canonical = canonicalize(&manifest).expect("canonical file manifest");
+    let object_id = canonical.object_id().clone();
+    let manifest_bytes = canonical.into_bytes();
+    let manifest_entry = ObjectEntry {
+        id: object_id.clone(),
+        uncompressed_bytes: manifest_bytes.len() as u64,
+        compressed_bytes: manifest_bytes.len() as u64,
+        content_type: ContentType::Json,
+    };
+    let index = ObjectIndex {
+        objects: vec![manifest_entry.clone(), chunk_entry.clone()],
+    };
+    let manifests = BTreeMap::from([(object_id.clone(), manifest)]);
+    let source = MappedObjectSource {
+        objects: BTreeMap::from([
+            (object_id.clone(), (manifest_entry, manifest_bytes)),
+            (chunk_id, (chunk_entry, payload)),
+        ]),
+    };
+    let destination = reforge_domain::PathToken::new(KnownFolderToken::UserProfile, "config.json")
+        .expect("destination token");
+    let operation = operation(
+        destination,
+        object_id,
+        ConfigKind::Json,
+        MergePolicy::PreserveUnknown,
+    );
+    let target = support::fixtures::target_facts();
+    let context = ExecutionContext::new(&target, &index)
+        .with_object_source(&source)
+        .with_file_manifests(&manifests);
+
+    ConfigRestoreHandler::new(roots(&fixture))
+        .execute(&operation, &context, &CancellationToken::new())
+        .await
+        .expect("manifest-backed JSON merge");
+
+    let merged: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .resolve_token(KnownFolderToken::UserProfile, "config.json")
+                .expect("merged config path"),
+        )
+        .expect("merged config"),
+    )
+    .expect("valid merged JSON");
+    assert_eq!(
+        merged
+            .get("from_payload")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(merged.get("chunks").is_none());
 }
 
 #[allow(dead_code)]

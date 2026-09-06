@@ -16,6 +16,7 @@ use reforge_domain::{
     KnownFolderToken, PathToken, ReforgeErrorCode,
 };
 use windows::{
+    Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
         Foundation::{CloseHandle, HANDLE},
         Security::{
@@ -29,7 +30,7 @@ use windows::{
         System::{
             Com::CoTaskMemFree,
             SystemInformation::{
-                GetNativeSystemInfo, GetVersionExW, OSVERSIONINFOW, PROCESSOR_ARCHITECTURE_AMD64,
+                GetNativeSystemInfo, OSVERSIONINFOW, PROCESSOR_ARCHITECTURE_AMD64,
                 PROCESSOR_ARCHITECTURE_ARM32_ON_WIN64, PROCESSOR_ARCHITECTURE_ARM64,
                 PROCESSOR_ARCHITECTURE_IA32_ON_WIN64, PROCESSOR_ARCHITECTURE_INTEL, SYSTEM_INFO,
             },
@@ -299,7 +300,10 @@ fn os_version() -> Result<(String, String), Box<ErrorEnvelope>> {
         dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
-    unsafe { GetVersionExW(&mut info) }.map_err(|error| windows_error("GetVersionExW", &error))?;
+    // GetVersionExW reports Windows 8 for an unmanifested CLI, even on Windows 11.
+    unsafe { RtlGetVersion(&mut info) }
+        .ok()
+        .map_err(|error| windows_error("RtlGetVersion", &error))?;
     Ok((
         format!("{}.{}", info.dwMajorVersion, info.dwMinorVersion),
         info.dwBuildNumber.to_string(),

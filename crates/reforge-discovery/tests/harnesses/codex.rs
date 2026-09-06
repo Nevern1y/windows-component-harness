@@ -201,12 +201,15 @@ model = "gpt-fixture"
     .expect("safe config serialization");
     assert!(!safe_config.contains("fixture-argument-secret"));
     assert!(!safe_config.contains("fixture-context7-secret"));
-    assert!(
-        discovery
-            .components
-            .iter()
-            .any(|component| { component.kind == ComponentKind::Harness })
-    );
+    let harness = discovery
+        .components
+        .iter()
+        .find(|component| component.kind == ComponentKind::Harness)
+        .expect("Codex harness component");
+    assert!(matches!(
+        harness.verification.first(),
+        Some(reforge_domain::VerificationRule::ConfigParses { .. })
+    ));
     assert!(
         discovery
             .components

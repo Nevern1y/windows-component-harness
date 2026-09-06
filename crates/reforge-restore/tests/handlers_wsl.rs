@@ -208,23 +208,11 @@ async fn missing_wsl_prerequisite_is_manual_without_process_execution() {
 }
 
 #[tokio::test]
-async fn large_wsl_artifact_waits_for_capacity_before_status_or_import() {
+async fn wsl_artifact_waits_for_insufficient_capacity_before_status_or_import() {
     let bytes = b"small fixture bytes";
-    let object = ObjectId::from_content(bytes);
-    let entry = ObjectEntry {
-        id: object.clone(),
-        uncompressed_bytes: 200 * 1024 * 1024 * 1024,
-        compressed_bytes: 1,
-        content_type: ContentType::Archive,
-    };
-    let index = ObjectIndex {
-        objects: vec![entry.clone()],
-    };
-    let source = MemoryObjectSource {
-        bytes: bytes.to_vec(),
-        entry,
-    };
-    let target = target();
+    let (object, index, _entry, source) = archive_object(bytes);
+    let mut target = target();
+    target.host.free_bytes[0].bytes = 0;
     let bridge = Arc::new(FakeBridge::new(true, []));
     let handler = WslRestoreHandler::with_bridge(bridge.clone());
 

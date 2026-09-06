@@ -6,6 +6,7 @@
 mod appx;
 mod features;
 mod fs;
+mod keyboard;
 mod known_folders;
 mod pe;
 mod privilege;
@@ -28,13 +29,17 @@ pub use features::{FeatureObservation, FeatureState, feature_probe_command, pars
 pub use fs::{
     AtomicReplaceResult, AtomicWriteSpec, BackupRecord, BoundedFileReader, FileAttributes,
     FileObservation, FileObservationKind, SafePath, StreamSummary, WalkLimits, atomic_replace,
-    walk_reparse_safe,
+    publish_new_file, walk_reparse_safe,
 };
+pub use keyboard::is_physical_c_key;
 pub use known_folders::{
     HostPreflight, KnownFolderAccessError, KnownFolderMap, collect_host_facts, host_preflight,
 };
 pub use pe::{FileVersion, PeMetadata, SignatureInfo, SignerStatus, inspect_pe};
-pub use privilege::{ElevationOutcome, ElevationRequest, PrivilegeBroker, RejectionReason};
+pub use privilege::{
+    ElevationOutcome, ElevationRequest, PrivilegeBroker, RejectionReason,
+    relaunch_current_process_elevated,
+};
 pub use process::{
     BuiltinExecutable, CancellationToken, CommandSpec, ProcessResult, ProcessRunner,
     TrustedExecutable,

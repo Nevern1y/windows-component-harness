@@ -589,7 +589,27 @@ impl CodexAdapter {
         let mut path_components: BTreeMap<String, ComponentId> = BTreeMap::new();
 
         // Harness node is the install/configuration anchor.  It does not claim
-        // that an executable or credential is portable.
+        // that an executable or credential is portable.  Use a documented
+        // config surface as the verification anchor required by restore.
+        let fallback_harness_config = join_token(&home, "config.toml")?;
+        let harness_verification = if let Some(artifact) =
+            result.artifacts.iter().find(|artifact| {
+                artifact.policy == ArtifactPolicy::Config
+                    && matches!(
+                        &artifact.content_type,
+                        ContentType::Json | ContentType::Jsonc | ContentType::Toml
+                    )
+            }) {
+            vec![VerificationRule::ConfigParses {
+                destination: artifact.source_path.clone(),
+                content_type: artifact.content_type.clone(),
+            }]
+        } else {
+            vec![VerificationRule::ConfigParses {
+                destination: fallback_harness_config,
+                content_type: ContentType::Toml,
+            }]
+        };
         let harness_evidence = state.evidence(&home, "Codex home discovered");
         let harness_component = build_component(
             ComponentKind::Harness,
@@ -598,7 +618,7 @@ impl CodexAdapter {
             Vec::new(),
             &harness_evidence,
             harness_restore(),
-            Vec::new(),
+            harness_verification,
             false,
             json_map([
                 ("adapter", json!(ADAPTER_ID)),

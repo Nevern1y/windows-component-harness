@@ -13,9 +13,9 @@ use std::{
 
 use async_trait::async_trait;
 use reforge_domain::{
-    ErrorEnvelope, ManualActionState, ObjectEntry, ObjectId, ObjectIndex, Operation, OperationId,
-    OperationKind, OperationState, Precondition, RestorePlan, RunId, RunStatus, TargetFacts,
-    validate_restore_plan,
+    ErrorEnvelope, FileManifest, ManualActionState, ObjectEntry, ObjectId, ObjectIndex, Operation,
+    OperationId, OperationKind, OperationState, Precondition, RestorePlan, RunId, RunStatus,
+    TargetFacts, validate_restore_plan,
 };
 use reforge_platform_windows::CancellationToken;
 use serde_json::{Map, Value, json};
@@ -169,6 +169,7 @@ pub trait BackupHook: Send + Sync {
 pub struct ExecutionContext<'a> {
     pub target: &'a TargetFacts,
     pub object_index: &'a ObjectIndex,
+    pub file_manifests: Option<&'a BTreeMap<ObjectId, FileManifest>>,
     pub object_source: Option<&'a dyn ObjectSource>,
     pub backup_hook: Option<&'a dyn BackupHook>,
 }
@@ -178,6 +179,7 @@ impl<'a> ExecutionContext<'a> {
         Self {
             target,
             object_index,
+            file_manifests: None,
             object_source: None,
             backup_hook: None,
         }
@@ -185,6 +187,14 @@ impl<'a> ExecutionContext<'a> {
 
     pub fn with_object_source(mut self, source: &'a dyn ObjectSource) -> Self {
         self.object_source = Some(source);
+        self
+    }
+
+    pub fn with_file_manifests(
+        mut self,
+        file_manifests: &'a BTreeMap<ObjectId, FileManifest>,
+    ) -> Self {
+        self.file_manifests = Some(file_manifests);
         self
     }
 
@@ -278,10 +288,26 @@ impl Executor {
         context: &ExecutionContext<'_>,
         cancellation: &CancellationToken,
     ) -> RestoreResult<ExecutionReport> {
+        self.execute_with_progress(plan, context, cancellation, |_, _, _, _| {})
+            .await
+    }
+
+    /// Execute a plan while reporting durable operation-state boundaries.
+    pub async fn execute_with_progress<F>(
+        &self,
+        plan: &RestorePlan,
+        context: &ExecutionContext<'_>,
+        cancellation: &CancellationToken,
+        progress: F,
+    ) -> RestoreResult<ExecutionReport>
+    where
+        F: Fn(&Operation, OperationState, u64, u64) + Send + Sync,
+    {
         self.journal.require_approved(&plan.run_id)?;
         let mut states = self.validate_execution(plan, context)?;
         let mut waiting_for_user = false;
-
+        let total = u64::try_from(plan.operations.len()).unwrap_or(u64::MAX);
+        let mut completed = 0u64;
         for operation in &plan.operations {
             let persisted = states.get(&operation.id).cloned().ok_or_else(|| {
                 execution_error(
@@ -295,6 +321,8 @@ impl Executor {
                 persisted.state,
                 OperationState::Completed | OperationState::Skipped
             ) {
+                completed = completed.saturating_add(1);
+                progress(operation, persisted.state, completed, total);
                 continue;
             }
             let mut acknowledged_blocker_action = None;
@@ -305,6 +333,7 @@ impl Executor {
                 match action_state {
                     ManualActionState::Pending => {
                         waiting_for_user = true;
+                        progress(operation, OperationState::WaitingForUser, completed, total);
                         continue;
                     }
                     ManualActionState::Skipped => {
@@ -324,6 +353,8 @@ impl Executor {
                             None,
                         )?;
                         states.insert(operation.id.clone(), updated);
+                        completed = completed.saturating_add(1);
+                        progress(operation, OperationState::Skipped, completed, total);
                         continue;
                     }
                     ManualActionState::Acknowledged => {
@@ -361,13 +392,6 @@ impl Executor {
                 return Err(self.persist_failure(&plan.run_id, operation, error, None));
             }
 
-            let handler = match self.handler_for(&operation.kind) {
-                Ok(handler) => handler,
-                Err(error) => {
-                    return Err(self.persist_failure(&plan.run_id, operation, error, None));
-                }
-            };
-
             if operation.non_idempotent
                 && (!matches!(persisted.state, OperationState::Pending) || persisted.attempt > 0)
             {
@@ -385,6 +409,77 @@ impl Executor {
             {
                 return Err(self.persist_failure(&plan.run_id, operation, error, None));
             }
+
+            if matches!(&operation.kind, OperationKind::Verify { .. }) {
+                let running = match self
+                    .journal
+                    .mark_operation_running(&plan.run_id, &operation.id)
+                {
+                    Ok(running) => running,
+                    Err(error) => {
+                        let error = correlate_error(operation, &error);
+                        return Err(self.persist_failure(&plan.run_id, operation, error, None));
+                    }
+                };
+                states.insert(operation.id.clone(), running);
+                progress(operation, OperationState::Running, completed, total);
+                if cancellation.is_cancelled() {
+                    return self.cancelled_operation_report(plan, &mut states, operation, None);
+                }
+
+                let recorded = states.values().collect::<Vec<_>>();
+                let verification = recorded
+                    .iter()
+                    .copied()
+                    .find(|record| record.id == operation.id)
+                    .expect("running verification operation is journaled");
+                let proof = match crate::verification::operation_verification_proof(
+                    verification,
+                    context.target,
+                    &recorded,
+                ) {
+                    Ok(Some(proof)) => proof,
+                    Ok(None) => {
+                        let error = execution_error(
+                            operation,
+                            reforge_domain::ReforgeErrorCode::OperationFailed,
+                            "verification rule was not proven by target facts or typed prerequisite evidence",
+                        );
+                        return Err(self.persist_failure(&plan.run_id, operation, error, None));
+                    }
+                    Err(error) => {
+                        let error = correlate_error(operation, &error);
+                        return Err(self.persist_failure(&plan.run_id, operation, error, None));
+                    }
+                };
+                let result = Some(outcome_payload(
+                    Some(serde_json::json!({
+                        "verification_checked": true,
+                        "source": proof,
+                    })),
+                    Vec::new(),
+                    None,
+                ));
+                let updated = self.journal.transition_operation(
+                    &plan.run_id,
+                    &operation.id,
+                    OperationState::Completed,
+                    result,
+                    None,
+                    None,
+                )?;
+                states.insert(operation.id.clone(), updated);
+                completed = completed.saturating_add(1);
+                progress(operation, OperationState::Completed, completed, total);
+                continue;
+            }
+
+            let handler = match self.handler_for(&operation.kind) {
+                Ok(handler) => handler,
+                Err(error) => {
+                    return Err(self.persist_failure(&plan.run_id, operation, error, None));
+                }
+            };
 
             let satisfaction = match handler.is_satisfied(operation, context, cancellation).await {
                 Ok(satisfaction) => satisfaction,
@@ -411,9 +506,10 @@ impl Executor {
                     None,
                 )?;
                 states.insert(operation.id.clone(), updated);
+                completed = completed.saturating_add(1);
+                progress(operation, OperationState::Skipped, completed, total);
                 continue;
             }
-
             let running = match self
                 .journal
                 .mark_operation_running(&plan.run_id, &operation.id)
@@ -426,7 +522,7 @@ impl Executor {
             };
             let attempt = running.attempt;
             states.insert(operation.id.clone(), running);
-
+            progress(operation, OperationState::Running, completed, total);
             let hook_backup = match context.backup_hook {
                 Some(hook) => match hook.prepare_backup(operation, context) {
                     Ok(backup) => backup,
@@ -527,6 +623,7 @@ impl Executor {
                     )),
                 ),
             };
+            let progress_state = state.clone();
             let updated = self.journal.transition_operation(
                 &plan.run_id,
                 &operation.id,
@@ -536,7 +633,13 @@ impl Executor {
                 backup,
             )?;
             states.insert(operation.id.clone(), updated);
-
+            if matches!(
+                progress_state,
+                OperationState::Completed | OperationState::Skipped
+            ) {
+                completed = completed.saturating_add(1);
+            }
+            progress(operation, progress_state, completed, total);
             match outcome.disposition {
                 OperationDisposition::Completed | OperationDisposition::Skipped => {}
                 OperationDisposition::WaitingForUser => {

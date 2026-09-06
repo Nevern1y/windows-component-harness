@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use reforge_domain::{
     ContentType, ErrorEnvelope, FileMode, KnownFolderToken, ObjectEntry, ObjectId, ObjectIndex,
     Operation, OperationId, OperationKind, OperationState, Precondition, ReforgeErrorCode,
-    RestoreMode, RestorePlan, RunId, RunStatus,
+    RestoreMode, RestorePlan, RunId, RunStatus, VerificationRule,
 };
 use reforge_platform_windows::CancellationToken;
 use reforge_restore::{
@@ -312,8 +312,20 @@ async fn successful_typed_operation_persists_result_evidence_and_backup() {
     executor.register_handler(TestHandler::new(HandlerMode::NeverSatisfied));
 
     let execution_context = ExecutionContext::new(&target, &object_index).with_backup_hook(&hook);
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let progress_events = Arc::clone(&progress);
     let report = executor
-        .execute(&plan, &execution_context, &CancellationToken::new())
+        .execute_with_progress(
+            &plan,
+            &execution_context,
+            &CancellationToken::new(),
+            move |_, state, completed, total| {
+                progress_events
+                    .lock()
+                    .expect("progress lock")
+                    .push((state, completed, total));
+            },
+        )
         .await
         .expect("typed operation executes");
     assert_eq!(report.status, RunStatus::Completed);
@@ -328,6 +340,93 @@ async fn successful_typed_operation_persists_result_evidence_and_backup() {
         "fixture-backup"
     );
     assert_eq!(hook.calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        progress.lock().expect("progress lock").as_slice(),
+        &[
+            (OperationState::Running, 0, 1),
+            (OperationState::Completed, 1, 1),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn verify_operation_fails_without_typed_prerequisite_evidence() {
+    let component = component_id(2);
+    let object = ObjectId::from_content(b"file contents");
+    let destination = reforge_domain::PathToken::new(KnownFolderToken::UserProfile, "verified.txt")
+        .expect("path token");
+    let rule = VerificationRule::File {
+        destination: destination.clone(),
+        object: Some(object.clone()),
+    };
+    let mut mutation = operation(
+        &run_id(),
+        &component,
+        0,
+        OperationKind::WriteFile {
+            destination,
+            object: object.clone(),
+            mode: FileMode::Replace,
+        },
+        Precondition::ArtifactPresent {
+            object: object.clone(),
+        },
+        false,
+    );
+    mutation.verification.push(rule.clone());
+    let mut verification = operation(
+        &run_id(),
+        &component,
+        1,
+        OperationKind::Verify { rule },
+        Precondition::Always,
+        false,
+    );
+    verification.prerequisites.push(mutation.id.clone());
+    let verification_id = verification.id.clone();
+    let plan = plan(vec![mutation, verification]);
+    let (_fixture, journal) = open_approved("executor-verify-proof", &plan);
+    let target = support::fixtures::target_facts();
+    let object_index = ObjectIndex {
+        objects: vec![ObjectEntry {
+            id: object,
+            uncompressed_bytes: 13,
+            compressed_bytes: 13,
+            content_type: ContentType::Utf8Text,
+        }],
+    };
+    let mut executor = Executor::new(journal.clone());
+    executor.register_handler(TestHandler::new(HandlerMode::NeverSatisfied));
+
+    let error = executor
+        .execute(
+            &plan,
+            &context(&target, &object_index),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("untyped result must not satisfy verification");
+    assert_eq!(error.code, ReforgeErrorCode::OperationFailed);
+    let operations = journal
+        .list_operations(&plan.run_id)
+        .expect("journal operations");
+    assert_eq!(operations[0].state, OperationState::Completed);
+    assert_eq!(
+        operations
+            .iter()
+            .find(|operation| operation.id == verification_id)
+            .expect("verification operation")
+            .state,
+        OperationState::Failed
+    );
+    assert_eq!(
+        journal
+            .get_run(&plan.run_id)
+            .expect("run query")
+            .expect("run")
+            .status,
+        RunStatus::Failed
+    );
 }
 
 #[tokio::test]

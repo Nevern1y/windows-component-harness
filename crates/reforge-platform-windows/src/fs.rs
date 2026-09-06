@@ -362,6 +362,26 @@ pub struct AtomicReplaceResult {
     pub backup: Option<BackupRecord>,
 }
 
+/// Publish an already validated sibling temporary file without replacing a target.
+/// Callers retain responsibility for reparse-safe path validation and temp cleanup.
+pub fn publish_new_file(source: &Path, destination: &Path) -> Result<(), Box<ErrorEnvelope>> {
+    if !source.is_absolute() || source.parent() != destination.parent() {
+        return Err(invalid_path_error(
+            "atomic publication requires absolute sibling paths",
+        ));
+    }
+    let source_wide = wide_path(source);
+    let destination_wide = wide_path(destination);
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source_wide.as_ptr()),
+            PCWSTR(destination_wide.as_ptr()),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| windows_error("atomically create destination", &error))
+}
+
 /// Write, flush, validate, back up, and atomically install one file.
 ///
 /// Existing files are replaced only through `ReplaceFileW` with a sibling
@@ -459,16 +479,7 @@ pub fn atomic_replace(
             ))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let temp_wide = wide_path(&temp_absolute);
-            let destination_wide = wide_path(&destination_absolute);
-            unsafe {
-                MoveFileExW(
-                    PCWSTR(temp_wide.as_ptr()),
-                    PCWSTR(destination_wide.as_ptr()),
-                    MOVEFILE_WRITE_THROUGH,
-                )
-            }
-            .map_err(|error| windows_error("atomically create destination", &error))?;
+            publish_new_file(&temp_absolute, &destination_absolute)?;
             temp_guard.disarm();
             None
         }

@@ -308,6 +308,15 @@ fn discovers_precedence_managed_state_metadata_and_symbolic_mcp() {
             .unwrap_or(true)
             || component.kind != ComponentKind::Plugin
     }));
+    let harness = discovery
+        .components
+        .iter()
+        .find(|component| component.kind == ComponentKind::Harness)
+        .expect("OpenCode harness component");
+    assert!(matches!(
+        harness.verification.first(),
+        Some(reforge_domain::VerificationRule::ConfigParses { .. })
+    ));
 }
 
 #[test]

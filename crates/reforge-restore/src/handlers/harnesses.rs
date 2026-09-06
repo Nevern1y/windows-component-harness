@@ -18,8 +18,8 @@ use reforge_platform_windows::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    DEFAULT_MAX_OBJECT_BYTES, object_entry, operation_error, read_existing_file,
-    read_verified_object, reject_protected_root, resolve_destination, target_attributes,
+    DEFAULT_MAX_OBJECT_BYTES, operation_error, read_existing_file, read_verified_artifact,
+    reject_protected_root, resolve_destination, target_attributes, validate_artifact,
     verified_evidence,
 };
 use crate::{
@@ -86,19 +86,17 @@ impl HarnessRestoreHandler {
                 "MCP source artifact has no content object",
             ));
         };
-        let entry = object_entry(context.object_index, object)?;
-        if entry.uncompressed_bytes > self.max_object_bytes
-            || entry.uncompressed_bytes > MAX_SOURCE_DOCUMENT_BYTES
-        {
+        let artifact = validate_artifact(context, object, self.max_object_bytes)?;
+        if artifact.size_bytes() > MAX_SOURCE_DOCUMENT_BYTES {
             return Err(operation_error(
                 ReforgeErrorCode::SecurityPolicy,
                 "MCP source configuration exceeds the reviewed size bound",
             ));
         }
-        if !compatible_content_type(&server.source_config.content_type, &entry.content_type) {
+        if !compatible_content_type(&server.source_config.content_type, artifact.content_type()) {
             return Err(operation_error(
                 ReforgeErrorCode::SchemaInvalid,
-                "MCP source artifact content type conflicts with its object index entry",
+                "MCP source artifact content type conflicts with its inspected file metadata",
             ));
         }
         Ok(())
@@ -386,8 +384,8 @@ impl OperationHandler for HarnessRestoreHandler {
                 "MCP source artifact has no content object",
             ));
         };
-        let (entry, source_bytes) = read_verified_object(context, object, self.max_object_bytes)?;
-        let source_document = parse_source_document(&source_bytes, entry.content_type)?;
+        let source = read_verified_artifact(context, object, self.max_object_bytes)?;
+        let source_document = parse_source_document(source.bytes(), source.content_type().clone())?;
         let source_container =
             source_container_for(&source_document, &server.name).ok_or_else(|| {
                 operation_error(

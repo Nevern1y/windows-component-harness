@@ -23,11 +23,15 @@ use crate::providers::{
 // The registry bridge below keeps the domain-specific adapters on the shared
 // coordinator boundary.
 
+pub mod agent_catalog;
+pub mod agent_runtimes;
 pub mod claude;
 pub mod codex;
 pub mod mcp;
 pub mod opencode;
 
+pub use agent_catalog::{AgentCatalogAdapter, AgentCatalogEntry, SCREENSHOT_AGENT_CATALOG};
+pub use agent_runtimes::{AgentRuntimeAdapter, AgentRuntimeKind};
 pub use claude::{
     ClaudeAgent, ClaudeCodeAdapter, ClaudeCommand, ClaudeDiscovery, ClaudeDiscoveryOptions,
     ClaudeHook, ClaudeInstruction, ClaudePlugin, ClaudeSettingsRecord, ClaudeSkill,

@@ -15,7 +15,7 @@ use reforge_platform_windows::{
 };
 use serde_json::json;
 
-use super::{ProviderProcessBridge, stage_subsystem_object, subsystem_capacity_waiting};
+use super::{ProviderProcessBridge, stage_subsystem_artifact, subsystem_capacity_waiting};
 use crate::handlers::operation_error;
 use crate::{
     ExecutionContext, OperationHandler, OperationOutcome, OperationSatisfaction, RestoreResult,
@@ -89,7 +89,7 @@ impl WslRestoreHandler {
                 "the target does not report WSL as available",
             ));
         }
-        if let Some(outcome) = subsystem_capacity_waiting(context, object, "wsl") {
+        if let Some(outcome) = subsystem_capacity_waiting(context, object, "wsl")? {
             return Ok(outcome);
         }
         let Some(version) = spec.wsl_version else {
@@ -112,7 +112,11 @@ impl WslRestoreHandler {
             ));
         }
 
-        let staged = stage_subsystem_object(context, object, ContentType::Archive)?;
+        let Some(staged) =
+            stage_subsystem_artifact(context, object, ContentType::Archive, cancellation)?
+        else {
+            return Ok(cancelled_outcome(spec));
+        };
         let install_location = self.install_location(spec)?;
         if fs::symlink_metadata(&install_location).is_ok() {
             return Ok(waiting_for_wsl(

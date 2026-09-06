@@ -64,6 +64,7 @@ const SECRET_PREFIXES: &[&str] = &[
     "xoxp-",
     "xoxa-",
     "sk-",
+    "ctx7sk-",
     "npm_",
     "pypi-",
     "hf_",
@@ -115,9 +116,20 @@ impl RedactionPolicy {
         self.max_depth
     }
 
+    /// Classify secret-bearing keys without treating diagnostic path keys as secrets.
+    pub fn is_sensitive_key(&self, key: &str) -> bool {
+        is_sensitive_key(&normalize_key(key))
+    }
+
     /// Redact known secrets, paths, and token patterns from text.
     pub fn redact_text(&self, input: &str) -> Option<String> {
-        redact_text_with_policy(input, self)
+        redact_text_with_policy(input, self, true)
+    }
+
+    /// Show local paths in an interactive terminal while retaining secret filtering.
+    /// Diagnostics, logs and reports must keep using `redact_text` instead.
+    pub fn redact_interactive_text(&self, input: &str) -> Option<String> {
+        redact_text_with_policy(input, self, false)
     }
 
     /// Recursively redact a JSON diagnostic and enforce the policy bounds.
@@ -186,7 +198,11 @@ pub fn sanitize_context_id(input: &str) -> Option<String> {
     Some(input.to_owned())
 }
 
-fn redact_text_with_policy(input: &str, policy: &RedactionPolicy) -> Option<String> {
+fn redact_text_with_policy(
+    input: &str,
+    policy: &RedactionPolicy,
+    hide_paths: bool,
+) -> Option<String> {
     if input
         .chars()
         .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
@@ -217,7 +233,7 @@ fn redact_text_with_policy(input: &str, policy: &RedactionPolicy) -> Option<Stri
             index = end;
             continue;
         }
-        if let Some(end) = match_path(input, index) {
+        if hide_paths && let Some(end) = match_path(input, index) {
             output.push_str(REDACTED_PATH);
             index = end;
             continue;
@@ -469,6 +485,7 @@ fn normalize_key(key: &str) -> Cow<'_, str> {
 
 fn is_sensitive_key(key: &str) -> bool {
     SENSITIVE_KEYS.contains(&key)
+        || key.contains("apikey")
         || key.ends_with("token")
         || key.ends_with("secret")
         || key.ends_with("password")
@@ -540,6 +557,17 @@ mod tests {
         assert!(!value.contains("Alice"));
         assert!(!value.contains("alice"));
         assert!(value.matches(REDACTED_PATH).count() >= 2);
+    }
+
+    #[test]
+    fn interactive_locations_remain_readable_but_secret_values_do_not() {
+        let policy = RedactionPolicy::default();
+        let path = r"C:\Users\Alice\Documents\Reforge Backups\backup.reforge";
+        let message = format!("Location: {path} CONTEXT7_API_KEY=ctx7sk-synthetic-secret");
+        let display = policy.redact_interactive_text(&message).unwrap();
+        assert!(display.contains(path));
+        assert!(!display.contains("ctx7sk-synthetic-secret"));
+        assert!(!policy.redact_text(&message).unwrap().contains("Alice"));
     }
 
     #[test]

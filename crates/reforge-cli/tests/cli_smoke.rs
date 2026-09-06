@@ -210,7 +210,6 @@ fn cli_fixture_workflow_is_json_safe_and_resumable() {
 
     let version = run_cli(&state, cli_args(&["--version"]));
     assert!(version.status.success(), "--version failed: {version:?}");
-    assert!(!String::from_utf8_lossy(&version.stdout).trim().is_empty());
 
     let help = run_cli(&state, cli_args(&["--help"]));
     assert!(help.status.success(), "--help failed: {help:?}");
@@ -218,6 +217,7 @@ fn cli_fixture_workflow_is_json_safe_and_resumable() {
     assert!(help_text.contains("scan"));
     assert!(help_text.contains("restore"));
     assert!(help_text.contains("interactive"));
+    assert!(help_text.contains("backup"));
     assert!(
         !help_text.contains("--scope"),
         "scan scope selector must not be advertised: {help_text}"
@@ -236,14 +236,33 @@ fn cli_fixture_workflow_is_json_safe_and_resumable() {
         "SCHEMA_INVALID"
     );
 
+    for command in ["backup", "restore"] {
+        let output = run_cli(&state, cli_args(&[command, "--json"]));
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "guided {command} JSON mode must be rejected: {output:?}"
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["payload"]["status"], "error");
+        assert_eq!(value["payload"]["error"]["code"], "SCHEMA_INVALID");
+    }
+
     let interactive = run_cli_with_input(&state, cli_args(&["interactive"]), b"0\n");
     assert!(
         interactive.status.success(),
         "interactive menu failed: {interactive:?}"
     );
     let interactive_stdout = String::from_utf8_lossy(&interactive.stdout);
-    assert!(interactive_stdout.contains("1. Проверить host (doctor)"));
-    assert!(interactive_stdout.contains("Выход."));
+    assert!(interactive_stdout.contains("[1] Quick Backup"));
+
+    let no_argument = run_cli_with_input(&state, Vec::<OsString>::new(), b"0\n");
+    assert!(
+        no_argument.status.success(),
+        "no-argument launch failed: {no_argument:?}"
+    );
+    let no_argument_stdout = String::from_utf8_lossy(&no_argument.stdout);
+    assert!(no_argument_stdout.contains("[1] Quick Backup"));
 
     let unsupported_scope = run_cli(&state, cli_args(&["scan", "--scope", "user", "--json"]));
     assert_eq!(

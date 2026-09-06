@@ -51,6 +51,8 @@ pub struct InspectedPackage {
     pub selection: SelectionInput,
     pub operations: PackageOperations,
     pub object_index: ObjectIndex,
+    /// Validated file-manifest metadata keyed by the artifact object reference.
+    pub file_manifests: BTreeMap<ObjectId, FileManifest>,
     pub sources: PackageSources,
     pub trust: TrustState,
     pub warnings: Vec<String>,
@@ -323,6 +325,7 @@ impl PackageReader {
             selection,
             operations,
             object_index,
+            file_manifests,
             sources,
             trust,
             warnings,

@@ -6,11 +6,12 @@ use std::{collections::BTreeMap, io::Write};
 
 use async_trait::async_trait;
 use reforge_domain::{
-    ArtifactId, ArtifactPolicy, ArtifactRef, ComponentId, ConfigScope, ContentType, EnvBinding,
-    ExecutableRef, KnownFolderToken, McpServerSpec, McpTransport, ObjectEntry, ObjectId,
-    ObjectIndex, Operation, OperationId, OperationKind, PathToken, Precondition, RunId,
-    RuntimeFact, SafeValueRef,
+    ArtifactId, ArtifactPolicy, ArtifactRef, ChunkRef, ComponentId, ConfigScope, ContentType,
+    EnvBinding, ExecutableRef, FileManifest, KnownFolderToken, McpServerSpec, McpTransport,
+    ObjectEntry, ObjectId, ObjectIndex, Operation, OperationId, OperationKind, PathToken,
+    Precondition, ReforgeErrorCode, RunId, RuntimeFact, SafeValueRef,
 };
+use reforge_package::canonicalize;
 use reforge_platform_windows::{CancellationToken, KnownFolderMap};
 use reforge_restore::{
     ExecutionContext, HarnessRestoreHandler, ObjectSource, OperationDisposition, OperationHandler,
@@ -128,9 +129,43 @@ fn operation(server: McpServerSpec) -> Operation {
 fn context<'a>(
     target: &'a reforge_domain::TargetFacts,
     index: &'a ObjectIndex,
-    source: &'a MemoryObjectSource,
+    source: &'a dyn ObjectSource,
 ) -> ExecutionContext<'a> {
     ExecutionContext::new(target, index).with_object_source(source)
+}
+
+struct MappedObjectSource {
+    objects: BTreeMap<ObjectId, (ObjectEntry, Vec<u8>)>,
+}
+
+impl ObjectSource for MappedObjectSource {
+    fn copy_verified_object(
+        &self,
+        object: &ObjectId,
+        output: &mut dyn Write,
+    ) -> RestoreResult<ObjectEntry> {
+        let (entry, bytes) = self.objects.get(object).ok_or_else(|| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::PackageNotFound,
+                "fixture object is missing",
+                None,
+                None,
+                None,
+                Some("manifest-mcp-test"),
+            )
+        })?;
+        output.write_all(bytes).map_err(|error| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::OperationFailed,
+                "fixture object write failed",
+                Some(&error.to_string()),
+                None,
+                None,
+                Some("manifest-mcp-test"),
+            )
+        })?;
+        Ok(entry.clone())
+    }
 }
 
 #[tokio::test]
@@ -304,4 +339,71 @@ async fn missing_required_runtime_pauses_before_config_mutation() {
         .await
         .expect("present runtime registration");
     assert_eq!(outcome.disposition, OperationDisposition::Completed);
+}
+
+#[tokio::test]
+async fn mcp_registration_reads_the_manifest_payload_instead_of_manifest_json() {
+    let fixture = FixtureRoot::new("handlers-mcp-manifest").expect("fixture root");
+    let payload = br#"{"mcpServers":{"context7":{"type":"stdio","command":"npx.cmd","args":["-y","@upstash/context7-mcp@1.0.0"],"env":{"LOG_LEVEL":"info"}}}}"#.to_vec();
+    let chunk_id = ObjectId::from_content(&payload);
+    let chunk_entry = ObjectEntry {
+        id: chunk_id.clone(),
+        uncompressed_bytes: payload.len() as u64,
+        compressed_bytes: payload.len() as u64,
+        content_type: ContentType::Json,
+    };
+    let manifest = FileManifest {
+        size_bytes: payload.len() as u64,
+        chunks: vec![ChunkRef {
+            id: chunk_id.clone(),
+            uncompressed_bytes: payload.len() as u64,
+        }],
+        content_type: ContentType::Json,
+        attributes: 0,
+    };
+    let canonical = canonicalize(&manifest).expect("canonical file manifest");
+    let object_id = canonical.object_id().clone();
+    let manifest_bytes = canonical.into_bytes();
+    let manifest_entry = ObjectEntry {
+        id: object_id.clone(),
+        uncompressed_bytes: manifest_bytes.len() as u64,
+        compressed_bytes: manifest_bytes.len() as u64,
+        content_type: ContentType::Json,
+    };
+    let index = ObjectIndex {
+        objects: vec![manifest_entry.clone(), chunk_entry.clone()],
+    };
+    let manifests = BTreeMap::from([(object_id.clone(), manifest)]);
+    let source = MappedObjectSource {
+        objects: BTreeMap::from([
+            (object_id.clone(), (manifest_entry, manifest_bytes)),
+            (chunk_id, (chunk_entry, payload)),
+        ]),
+    };
+    let target = support::fixtures::target_facts();
+    let context = ExecutionContext::new(&target, &index)
+        .with_object_source(&source)
+        .with_file_manifests(&manifests);
+
+    let outcome = HarnessRestoreHandler::new(roots(&fixture))
+        .execute(
+            &operation(server(object_id, ContentType::Json)),
+            &context,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("manifest-backed MCP registration");
+
+    assert_eq!(outcome.disposition, OperationDisposition::Completed);
+    let restored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .resolve_token(KnownFolderToken::UserProfile, ".codex/config.json")
+                .expect("restored config path"),
+        )
+        .expect("restored config"),
+    )
+    .expect("valid restored JSON");
+    assert_eq!(restored["mcpServers"]["context7"]["command"], "npx.cmd");
+    assert!(restored.get("chunks").is_none());
 }

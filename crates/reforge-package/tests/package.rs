@@ -208,6 +208,17 @@ fn round_trip_is_deterministic_and_uses_zip64_object_layout() {
             .iter()
             .any(|warning| warning == "Package is unsigned")
     );
+    assert_eq!(inspected.file_manifests.len(), 1);
+    let file_manifest = inspected
+        .file_manifests
+        .values()
+        .next()
+        .expect("inspected file manifest");
+    assert_eq!(
+        file_manifest.size_bytes,
+        case.graph.components[0].artifacts[0].size_bytes
+    );
+    assert_eq!(file_manifest.chunks[0].id, case.chunk_entry.id);
     let chunk_location = inspected
         .object_location(&case.chunk_entry.id)
         .expect("chunk location");

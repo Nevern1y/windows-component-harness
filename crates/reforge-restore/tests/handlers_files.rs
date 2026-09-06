@@ -7,9 +7,10 @@ use std::{collections::BTreeMap, io::Write};
 
 use async_trait::async_trait;
 use reforge_domain::{
-    ContentType, FileMode, KnownFolderToken, ObjectEntry, ObjectId, ObjectIndex, Operation,
-    OperationId, OperationKind, Precondition, RunId,
+    ChunkRef, ContentType, FileManifest, FileMode, KnownFolderToken, ObjectEntry, ObjectId,
+    ObjectIndex, Operation, OperationId, OperationKind, Precondition, ReforgeErrorCode, RunId,
 };
+use reforge_package::{FILE_CHUNK_BYTES, canonicalize};
 use reforge_platform_windows::{CancellationToken, KnownFolderMap};
 use reforge_restore::{
     ExecutionContext, FileRestoreHandler, ObjectSource, OperationHandler, OperationSatisfaction,
@@ -96,9 +97,98 @@ impl ObjectSource for MemoryObjectSource {
 fn context<'a>(
     target: &'a reforge_domain::TargetFacts,
     index: &'a ObjectIndex,
-    source: &'a MemoryObjectSource,
+    source: &'a dyn ObjectSource,
 ) -> ExecutionContext<'a> {
     ExecutionContext::new(target, index).with_object_source(source)
+}
+
+struct MappedObjectSource {
+    objects: BTreeMap<ObjectId, (ObjectEntry, Vec<u8>)>,
+}
+
+impl ObjectSource for MappedObjectSource {
+    fn copy_verified_object(
+        &self,
+        object: &ObjectId,
+        output: &mut dyn Write,
+    ) -> RestoreResult<ObjectEntry> {
+        let (entry, bytes) = self.objects.get(object).ok_or_else(|| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::PackageNotFound,
+                "fixture object is missing",
+                None,
+                None,
+                None,
+                Some("manifest-file-test"),
+            )
+        })?;
+        output.write_all(bytes).map_err(|error| {
+            reforge_restore::restore_error(
+                ReforgeErrorCode::OperationFailed,
+                "fixture object write failed",
+                Some(&error.to_string()),
+                None,
+                None,
+                Some("manifest-file-test"),
+            )
+        })?;
+        Ok(entry.clone())
+    }
+}
+
+fn manifest_artifact(
+    chunks: Vec<Vec<u8>>,
+) -> (
+    ObjectId,
+    ObjectIndex,
+    BTreeMap<ObjectId, FileManifest>,
+    MappedObjectSource,
+    Vec<u8>,
+) {
+    let mut payload = Vec::new();
+    let mut chunk_refs = Vec::new();
+    let mut entries = Vec::new();
+    let mut objects = BTreeMap::new();
+    for bytes in chunks {
+        payload.extend_from_slice(&bytes);
+        let id = ObjectId::from_content(&bytes);
+        let entry = ObjectEntry {
+            id: id.clone(),
+            uncompressed_bytes: bytes.len() as u64,
+            compressed_bytes: bytes.len() as u64,
+            content_type: ContentType::Binary,
+        };
+        chunk_refs.push(ChunkRef {
+            id: id.clone(),
+            uncompressed_bytes: bytes.len() as u64,
+        });
+        entries.push(entry.clone());
+        objects.insert(id, (entry, bytes));
+    }
+    let manifest = FileManifest {
+        size_bytes: payload.len() as u64,
+        chunks: chunk_refs,
+        content_type: ContentType::Binary,
+        attributes: 0,
+    };
+    let canonical = canonicalize(&manifest).expect("canonical file manifest");
+    let object = canonical.object_id().clone();
+    let manifest_bytes = canonical.into_bytes();
+    let manifest_entry = ObjectEntry {
+        id: object.clone(),
+        uncompressed_bytes: manifest_bytes.len() as u64,
+        compressed_bytes: manifest_bytes.len() as u64,
+        content_type: ContentType::Json,
+    };
+    entries.push(manifest_entry.clone());
+    objects.insert(object.clone(), (manifest_entry, manifest_bytes));
+    (
+        object.clone(),
+        ObjectIndex { objects: entries },
+        BTreeMap::from([(object, manifest)]),
+        MappedObjectSource { objects },
+        payload,
+    )
 }
 
 #[tokio::test]
@@ -228,4 +318,100 @@ async fn already_matching_file_is_reported_as_satisfied() {
         satisfaction,
         OperationSatisfaction::Satisfied { .. }
     ));
+}
+
+#[tokio::test]
+async fn manifest_backed_file_reconstructs_chunks_in_order_and_is_idempotent() {
+    let fixture = FixtureRoot::new("handlers-files-manifest").expect("fixture root");
+    let destination =
+        reforge_domain::PathToken::new(KnownFolderToken::UserProfile, "manifest-backed.bin")
+            .expect("destination token");
+    let first = vec![b'a'; FILE_CHUNK_BYTES];
+    let second = b"ordered-tail".to_vec();
+    let (object, index, manifests, source, payload) = manifest_artifact(vec![first, second]);
+    let target = support::fixtures::target_facts();
+    let operation = operation(destination.clone(), object.clone(), FileMode::Replace);
+    let context = ExecutionContext::new(&target, &index)
+        .with_object_source(&source)
+        .with_file_manifests(&manifests);
+    let handler = FileRestoreHandler::new(roots(&fixture));
+
+    let outcome = handler
+        .execute(&operation, &context, &CancellationToken::new())
+        .await
+        .expect("manifest-backed file restore");
+    assert_eq!(outcome.evidence[0]["object_id"], object.as_str());
+
+    let installed = std::fs::read(
+        fixture
+            .resolve_token(KnownFolderToken::UserProfile, "manifest-backed.bin")
+            .expect("installed file path"),
+    )
+    .expect("installed file");
+    assert_eq!(installed, payload);
+    let satisfaction = handler
+        .is_satisfied(&operation, &context, &CancellationToken::new())
+        .await
+        .expect("manifest-backed satisfaction check");
+    assert!(matches!(
+        satisfaction,
+        OperationSatisfaction::Satisfied { .. }
+    ));
+}
+
+#[tokio::test]
+async fn manifest_backed_file_rejects_a_missing_indexed_chunk() {
+    let fixture = FixtureRoot::new("handlers-files-missing-chunk").expect("fixture root");
+    let destination =
+        reforge_domain::PathToken::new(KnownFolderToken::UserProfile, "missing-chunk.bin")
+            .expect("destination token");
+    let (object, mut index, manifests, source, _) =
+        manifest_artifact(vec![b"package payload".to_vec()]);
+    let missing = manifests[&object].chunks[0].id.clone();
+    index.objects.retain(|entry| entry.id != missing);
+    let target = support::fixtures::target_facts();
+    let context = ExecutionContext::new(&target, &index)
+        .with_object_source(&source)
+        .with_file_manifests(&manifests);
+
+    let error = FileRestoreHandler::new(roots(&fixture))
+        .execute(
+            &operation(destination, object, FileMode::Replace),
+            &context,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("missing manifest chunk must fail closed");
+    assert_eq!(error.code, ReforgeErrorCode::PackageCorrupt);
+}
+
+#[tokio::test]
+async fn manifest_backed_file_rejects_corrupt_chunk_bytes_and_payload_bounds() {
+    let fixture = FixtureRoot::new("handlers-files-corrupt-chunk").expect("fixture root");
+    let destination =
+        reforge_domain::PathToken::new(KnownFolderToken::UserProfile, "corrupt-chunk.bin")
+            .expect("destination token");
+    let (object, index, manifests, mut source, payload) =
+        manifest_artifact(vec![b"package payload".to_vec()]);
+    let chunk = manifests[&object].chunks[0].id.clone();
+    source.objects.get_mut(&chunk).expect("chunk object").1[0] ^= 0xff;
+    let target = support::fixtures::target_facts();
+    let context = ExecutionContext::new(&target, &index)
+        .with_object_source(&source)
+        .with_file_manifests(&manifests);
+    let operation = operation(destination, object.clone(), FileMode::Replace);
+
+    let corrupt = FileRestoreHandler::new(roots(&fixture))
+        .execute(&operation, &context, &CancellationToken::new())
+        .await
+        .expect_err("corrupt manifest chunk must fail closed");
+    assert_eq!(corrupt.code, ReforgeErrorCode::PackageCorrupt);
+
+    let bounded = FileRestoreHandler::new(roots(&fixture))
+        .with_max_object_bytes(payload.len() as u64 - 1)
+        .expect("nonzero handler bound")
+        .execute(&operation, &context, &CancellationToken::new())
+        .await
+        .expect_err("manifest payload over the handler bound must fail closed");
+    assert_eq!(bounded.code, ReforgeErrorCode::SecurityPolicy);
 }

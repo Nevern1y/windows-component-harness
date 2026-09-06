@@ -486,6 +486,42 @@ impl ClaudeCodeAdapter {
             artifacts: sorted_artifacts(artifacts),
             ..ClaudeDiscovery::empty()
         };
+        let fallback_harness_config = join_token(&config_home, "settings.json")?;
+        let config_artifact = result
+            .artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.policy == ArtifactPolicy::Config
+                    && artifact.source_path.relative.ends_with("settings.json")
+                    && matches!(
+                        &artifact.content_type,
+                        reforge_domain::ContentType::Json
+                            | reforge_domain::ContentType::Jsonc
+                            | reforge_domain::ContentType::Toml
+                    )
+            })
+            .or_else(|| {
+                result.artifacts.iter().find(|artifact| {
+                    artifact.policy == ArtifactPolicy::Config
+                        && matches!(
+                            &artifact.content_type,
+                            reforge_domain::ContentType::Json
+                                | reforge_domain::ContentType::Jsonc
+                                | reforge_domain::ContentType::Toml
+                        )
+                })
+            });
+        let harness_verification = if let Some(artifact) = config_artifact {
+            vec![VerificationRule::ConfigParses {
+                destination: artifact.source_path.clone(),
+                content_type: artifact.content_type.clone(),
+            }]
+        } else {
+            vec![VerificationRule::ConfigParses {
+                destination: fallback_harness_config,
+                content_type: reforge_domain::ContentType::Json,
+            }]
+        };
         let harness_evidence = state.evidence(&config_home, "Claude Code home discovered");
         let harness = build_component(
             ComponentKind::Harness,
@@ -494,7 +530,7 @@ impl ClaudeCodeAdapter {
             Vec::new(),
             &harness_evidence,
             harness_restore(),
-            Vec::new(),
+            harness_verification,
             false,
             json_map([
                 ("adapter", json!(ADAPTER_ID)),

@@ -271,12 +271,15 @@ fn discovers_scoped_claude_state_plugins_and_redacted_mcp() {
     )
     .expect("safe settings serialization");
     assert!(!safe_settings.contains("fixture-settings-secret"));
-    assert!(
-        discovery
-            .components
-            .iter()
-            .any(|component| { component.kind == ComponentKind::Harness })
-    );
+    let harness = discovery
+        .components
+        .iter()
+        .find(|component| component.kind == ComponentKind::Harness)
+        .expect("Claude Code harness component");
+    assert!(matches!(
+        harness.verification.first(),
+        Some(reforge_domain::VerificationRule::ConfigParses { .. })
+    ));
     assert!(
         discovery
             .components

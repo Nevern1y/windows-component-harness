@@ -17,7 +17,7 @@ use reforge_platform_windows::{
 };
 use serde_json::{Value, json};
 
-use super::{ProviderProcessBridge, stage_subsystem_object, subsystem_capacity_waiting};
+use super::{ProviderProcessBridge, stage_subsystem_artifact, subsystem_capacity_waiting};
 use crate::handlers::operation_error;
 use crate::{
     ExecutionContext, OperationHandler, OperationOutcome, OperationSatisfaction, RestoreResult,
@@ -86,11 +86,15 @@ impl DockerRestoreHandler {
                 "docker.exe is unavailable or the Docker provider is not ready",
             ));
         }
-        if let Some(outcome) = subsystem_capacity_waiting(context, object, "docker") {
+        if let Some(outcome) = subsystem_capacity_waiting(context, object, "docker")? {
             return Ok(outcome);
         }
 
-        let staged = stage_subsystem_object(context, object, ContentType::Archive)?;
+        let Some(staged) =
+            stage_subsystem_artifact(context, object, ContentType::Archive, cancellation)?
+        else {
+            return Ok(cancelled_image(image));
+        };
         let archive = archive_argument(&staged)?;
         if cancellation.is_cancelled() {
             return Ok(cancelled_image(image));
@@ -182,7 +186,7 @@ impl DockerRestoreHandler {
                 "the target volume already exists and its data cannot be replaced automatically",
             ));
         }
-        if let Some(outcome) = subsystem_capacity_waiting(context, object, "docker") {
+        if let Some(outcome) = subsystem_capacity_waiting(context, object, "docker")? {
             return Ok(outcome);
         }
 
@@ -263,7 +267,11 @@ impl DockerRestoreHandler {
             ));
         }
 
-        let staged = stage_subsystem_object(context, object, ContentType::Archive)?;
+        let Some(staged) =
+            stage_subsystem_artifact(context, object, ContentType::Archive, cancellation)?
+        else {
+            return Ok(cancelled_volume(volume));
+        };
         let archive = archive_argument(&staged)?;
         let mut create_args = vec![OsString::from("volume"), OsString::from("create")];
         if let Some(driver) = volume.driver.as_deref() {

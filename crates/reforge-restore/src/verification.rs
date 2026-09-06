@@ -702,6 +702,65 @@ fn observed_at(operations: &[&JournalOperation]) -> DateTime<Utc> {
         .unwrap_or_else(Utc::now)
 }
 
+/// Prove one planned `Verify` operation from its same-run, same-component
+/// prerequisite closure. Only typed operation kinds can supply journal proof;
+/// a stale row or a self-authenticating verification marker cannot.
+pub(crate) fn operation_verification_proof(
+    verification: &JournalOperation,
+    target: &TargetFacts,
+    operations: &[&JournalOperation],
+) -> RestoreResult<Option<&'static str>> {
+    let OperationKind::Verify { rule } = &verification.operation.kind else {
+        return Err(schema_error(
+            "verification proof requested for a non-verify operation",
+        ));
+    };
+    validate_rule_shape(rule)?;
+
+    let by_id = operations
+        .iter()
+        .copied()
+        .filter(|operation| operation.run_id == verification.run_id)
+        .map(|operation| (operation.id.clone(), operation))
+        .collect::<BTreeMap<_, _>>();
+    let mut pending = verification.operation.prerequisites.clone();
+    let mut visited = BTreeSet::new();
+    let mut relevant = Vec::new();
+    while let Some(operation_id) = pending.pop() {
+        if !visited.insert(operation_id.clone()) {
+            continue;
+        }
+        let Some(operation) = by_id.get(&operation_id).copied() else {
+            return Ok(None);
+        };
+        pending.extend(operation.operation.prerequisites.iter().cloned());
+        if operation.operation.component == verification.operation.component
+            && operation_matches_rule(operation, rule)
+        {
+            relevant.push(operation);
+        }
+    }
+
+    if relevant.iter().any(|operation| {
+        !matches!(
+            operation.state,
+            OperationState::Completed | OperationState::Skipped
+        )
+    }) {
+        return Ok(None);
+    }
+    if relevant
+        .iter()
+        .any(|operation| operation_proves(rule, operation))
+    {
+        return Ok(Some("journal evidence"));
+    }
+    if relevant.is_empty() && target_satisfies(rule, target) {
+        return Ok(Some("target facts"));
+    }
+    Ok(None)
+}
+
 fn relevant_operations<'a>(
     rule: &VerificationRule,
     operations: &[&'a JournalOperation],
@@ -714,20 +773,6 @@ fn relevant_operations<'a>(
 }
 
 fn operation_matches_rule(operation: &JournalOperation, rule: &VerificationRule) -> bool {
-    if operation
-        .operation
-        .verification
-        .iter()
-        .any(|candidate| candidate == rule)
-    {
-        return true;
-    }
-    if let OperationKind::Verify { rule: candidate } = &operation.operation.kind
-        && candidate == rule
-    {
-        return true;
-    }
-
     match rule {
         VerificationRule::ProviderIdentity { provider, package } => {
             matches!(
@@ -739,11 +784,20 @@ fn operation_matches_rule(operation: &JournalOperation, rule: &VerificationRule)
                 } if operation_provider == provider && operation_package == package
             )
         }
-        VerificationRule::File { destination, .. }
-        | VerificationRule::FileVersion { destination, .. }
+        VerificationRule::File {
+            destination,
+            object,
+        } => {
+            file_operation_destination(&operation.operation.kind)
+                .is_some_and(|candidate| candidate == destination)
+                && object.as_ref().is_none_or(|expected| {
+                    file_operation_object(&operation.operation.kind) == Some(expected)
+                })
+        }
+        VerificationRule::FileVersion { destination, .. }
         | VerificationRule::BrowserArtifact {
             profile: destination,
-        } => operation_destination(&operation.operation.kind)
+        } => file_operation_destination(&operation.operation.kind)
             .is_some_and(|candidate| candidate == destination),
         VerificationRule::ConfigParses {
             destination,
@@ -804,12 +858,20 @@ fn operation_matches_rule(operation: &JournalOperation, rule: &VerificationRule)
     }
 }
 
-fn operation_destination(kind: &OperationKind) -> Option<&PathToken> {
+fn file_operation_destination(kind: &OperationKind) -> Option<&PathToken> {
     match kind {
         OperationKind::WriteFile { destination, .. }
         | OperationKind::MergeJson { destination, .. }
         | OperationKind::MergeToml { destination, .. } => Some(destination),
-        OperationKind::RegisterMcp { server } => Some(&server.source_config.source_path),
+        _ => None,
+    }
+}
+
+fn file_operation_object(kind: &OperationKind) -> Option<&ObjectId> {
+    match kind {
+        OperationKind::WriteFile { object, .. }
+        | OperationKind::MergeJson { object, .. }
+        | OperationKind::MergeToml { object, .. } => Some(object),
         _ => None,
     }
 }
@@ -858,12 +920,12 @@ fn operation_proves(rule: &VerificationRule, operation: &JournalOperation) -> bo
                     && package.installer_hash.is_none()
             })
         }
-        VerificationRule::File { object, .. } => file_proof(&payloads, object.as_ref()),
+        VerificationRule::File { .. } => file_proof(&payloads),
         VerificationRule::FileVersion {
             version, publisher, ..
         } => file_version_proof(&payloads, version.as_ref(), publisher.as_ref()),
         VerificationRule::ConfigParses { content_type, .. } => {
-            config_kind_proof(&payloads, content_type) && file_proof(&payloads, None)
+            config_kind_proof(&payloads, content_type) && file_proof(&payloads)
         }
         VerificationRule::Environment {
             scope,
@@ -884,7 +946,7 @@ fn operation_proves(rule: &VerificationRule, operation: &JournalOperation) -> bo
         VerificationRule::DockerObject { kind, identity } => {
             docker_payload_proof(&payloads, kind, identity)
         }
-        VerificationRule::BrowserArtifact { .. } => file_proof(&payloads, None),
+        VerificationRule::BrowserArtifact { .. } => file_proof(&payloads),
         VerificationRule::SecureTarget { secret } => payloads.iter().any(|payload| {
             (field_bool(payload, "secure_target") == Some(true)
                 || field_bool(payload, "secure_adapter") == Some(true))
@@ -910,7 +972,7 @@ fn operation_payloads(operation: &JournalOperation) -> Vec<&Value> {
     payloads
 }
 
-fn file_proof(payloads: &[&Value], object: Option<&ObjectId>) -> bool {
+fn file_proof(payloads: &[&Value]) -> bool {
     payloads.iter().any(|payload| {
         let Some(_bytes) = field_u64(payload, "bytes") else {
             return false;
@@ -918,16 +980,7 @@ fn file_proof(payloads: &[&Value], object: Option<&ObjectId>) -> bool {
         let Some(digest) = field_str(payload, "blake3") else {
             return false;
         };
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return false;
-        }
-        object.is_none_or(|expected| {
-            field_str(payload, "object") == Some(expected.as_str())
-                || expected
-                    .as_str()
-                    .strip_prefix("obj_")
-                    .is_some_and(|expected_digest| digest.eq_ignore_ascii_case(expected_digest))
-        })
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
     })
 }
 
@@ -1671,6 +1724,78 @@ mod tests {
         let report = verify_restore(&input).expect("report");
         assert_eq!(report.status, ReportStatus::Verified);
         assert_eq!(report.counts.verified, 1);
+    }
+
+    #[test]
+    fn verify_proof_is_bound_to_typed_same_component_prerequisites() {
+        let path = PathToken::new(KnownFolderToken::UserProfile, "settings.json").expect("path");
+        let object = ObjectId::from_content(b"test");
+        let rule = VerificationRule::File {
+            destination: path.clone(),
+            object: Some(object.clone()),
+        };
+        let component = component_id(0);
+        let mutation = operation(
+            &component,
+            OperationKind::WriteFile {
+                destination: path,
+                object: object.clone(),
+                mode: reforge_domain::FileMode::Replace,
+            },
+            vec![rule.clone()],
+            file_result(&object),
+            OperationState::Completed,
+        );
+        let verify_id = OperationId::for_run(&run_id(), 2).expect("verify operation ID");
+        let mut verification = operation(
+            &component,
+            OperationKind::Verify { rule: rule.clone() },
+            Vec::new(),
+            serde_json::json!({"verification_checked": true, "source": "journal evidence"}),
+            OperationState::Running,
+        );
+        verification.id = verify_id.clone();
+        verification.operation.id = verify_id;
+        verification.operation.prerequisites = vec![mutation.id.clone()];
+
+        assert_eq!(
+            operation_verification_proof(&verification, &target(), &[&mutation, &verification],)
+                .expect("proof evaluation"),
+            Some("journal evidence")
+        );
+        assert!(!operation_matches_rule(&verification, &rule));
+
+        let mut missing_evidence = mutation.clone();
+        missing_evidence.result = Some(serde_json::json!({"result": {"changed": true}}));
+        assert_eq!(
+            operation_verification_proof(
+                &verification,
+                &target(),
+                &[&missing_evidence, &verification],
+            )
+            .expect("missing proof evaluation"),
+            None
+        );
+
+        let mut foreign = mutation.clone();
+        foreign.operation.component = component_id(1);
+        assert_eq!(
+            operation_verification_proof(&verification, &target(), &[&foreign, &verification],)
+                .expect("foreign proof evaluation"),
+            None
+        );
+
+        let mut without_prerequisite = verification.clone();
+        without_prerequisite.operation.prerequisites.clear();
+        assert_eq!(
+            operation_verification_proof(
+                &without_prerequisite,
+                &target(),
+                &[&mutation, &without_prerequisite],
+            )
+            .expect("stale proof evaluation"),
+            None
+        );
     }
 
     #[test]

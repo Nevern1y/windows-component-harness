@@ -1,13 +1,15 @@
+mod interactive;
 #[path = "report.rs"]
 pub mod report;
 #[path = "secret_prompt.rs"]
 pub mod secret_prompt;
+mod tui;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
-    io::{Cursor, Write},
-    path::{Path, PathBuf},
+    fs::{self, OpenOptions},
+    io::{Cursor, Seek, SeekFrom, Write},
+    path::{Component as PathComponent, Path, PathBuf, Prefix},
     process,
     sync::Arc,
 };
@@ -17,33 +19,40 @@ use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use reforge_discovery::{
     DiscoveryCoordinator,
     generic::GenericExecutableAdapter,
-    harnesses::{HarnessKind, HarnessRegistryAdapter},
+    harnesses::{
+        AgentCatalogAdapter, AgentRuntimeAdapter, AgentRuntimeKind, HarnessKind,
+        HarnessRegistryAdapter,
+    },
     providers::{
         AdapterRegistry, ChocolateyAdapter, DockerAdapter, DotnetAdapter, GoAdapter,
         JavaScriptAdapter, NodePackageManager, PowerShellAdapter, PythonAdapter, RustAdapter,
         ScoopAdapter, WinGetAdapter, WindowsRegistrationAdapter, WslAdapter,
     },
 };
+use reforge_domain::RedactionPolicy;
 use reforge_domain::selection::build_selection_closure;
 use reforge_domain::{
-    ArtifactPolicy, ComponentId, ComponentKind, ErrorEnvelope, Inventory, KnownFolderToken,
-    ManualAction, ObjectEntry, ObjectIndex, PackageGraph, PackageManifest, ProgressEvent,
-    ReforgeErrorCode, RestoreMode, RestorePlan, RestoreReport, RunId, ScanPhase,
-    SecretSelectionPolicy, SelectionInput, SelectionPolicy, TargetFacts, TrustState,
+    ArtifactId, ArtifactPolicy, ArtifactSelection, Component, ComponentId, ComponentKind,
+    ContentType, ErrorEnvelope, HostFacts, Inventory, KnownFolderToken, ManualAction, ObjectEntry,
+    ObjectIndex, Operation, OperationState, PackageGraph, PackageManifest, PathToken,
+    ProgressEvent, ReforgeErrorCode, RestoreMode, RestorePlan, RestoreReport, RestoreStrategy,
+    RunId, ScanPhase, SecretSelectionPolicy, SelectionInput, SelectionPolicy, TargetFacts,
+    TransportReceipt, TrustState,
 };
 use reforge_package::{
     InspectedPackage, ObjectStore, PackageReader, PackageWriteRequest, PackageWriter, canonicalize,
 };
 use reforge_platform_windows::{
-    AtomicWriteSpec, CancellationToken, FileAttributes, KnownFolderMap, ProcessRunner, SafePath,
-    atomic_replace, host_preflight,
+    AtomicWriteSpec, BoundedFileReader, CancellationToken, FileAttributes, KnownFolderMap,
+    ProcessRunner, SafePath, atomic_replace, host_preflight,
 };
 use reforge_restore::{
-    BrowserAwareRestoreHandler, CompatibilityEngine, DiffEngine, DockerRestoreHandler,
-    EnvironmentRestoreHandler, ExecutionContext, Executor, HarnessRestoreHandler, Journal,
-    JournalEvent, JournalManualAction, JournalOperation, JournalRun, ManualActionHandler,
-    ManualActionQueue, ObjectSource, ProviderInstallHandler, RestorePlanner, TargetScanner,
-    VerificationEngine, VerificationInput, VsCodeRestoreHandler, WslRestoreHandler,
+    BrowserAwareRestoreHandler, CompatibilityEngine, ComponentDisposition, DiffEngine,
+    DockerRestoreHandler, EnvironmentRestoreHandler, ExecutionContext, Executor,
+    HarnessRestoreHandler, Journal, JournalEvent, JournalManualAction, JournalOperation,
+    JournalRun, ManualActionHandler, ManualActionQueue, ObjectSource, ProviderInstallHandler,
+    RestorePlanner, TargetDiff, TargetScanner, VerificationEngine, VerificationInput,
+    VsCodeRestoreHandler, WslRestoreHandler, recommended_free_bytes,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -66,13 +75,15 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Discover the current Windows environment.
     Scan,
+    /// Start the guided quick-backup workflow.
+    Backup,
     /// Inspect or create a portable package.
     Package {
         #[command(subcommand)]
@@ -95,13 +106,13 @@ enum Command {
         #[arg(long, value_enum)]
         mode: ModeArg,
     },
-    /// Approve and execute a restore plan.
+    /// Open guided restore, or execute an explicit automation restore when options are supplied.
     Restore {
-        #[arg(long)]
-        package: PathBuf,
-        #[arg(long, value_enum)]
-        mode: ModeArg,
-        #[arg(long)]
+        #[arg(long, requires = "mode")]
+        package: Option<PathBuf>,
+        #[arg(long, value_enum, requires = "package")]
+        mode: Option<ModeArg>,
+        #[arg(long, requires = "package")]
         yes_safe: bool,
     },
     /// Continue an approved interrupted or pending run.
@@ -128,7 +139,7 @@ enum Command {
     },
     /// Check host and local state prerequisites.
     Doctor,
-    /// Open the numbered human-friendly line-mode wizard.
+    /// Open the interactive terminal-first interface.
     Interactive,
 }
 
@@ -232,6 +243,35 @@ pub struct ApplicationRunDetails {
     pub manual_actions: Vec<JournalManualAction>,
 }
 
+/// Result of the same conservative selection review used by package creation.
+#[derive(Clone, Debug)]
+pub(crate) struct SelectionReview {
+    pub selection: SelectionInput,
+    pub selected_components: Vec<ComponentId>,
+    pub selected_artifacts: Vec<ArtifactId>,
+    pub total_bytes: u64,
+    pub secret_findings: Vec<SecretFinding>,
+}
+
+/// A secret-like value was detected without retaining or exposing its value.
+#[derive(Clone, Debug)]
+pub(crate) struct SecretFinding {
+    pub component_name: String,
+    pub artifact_path: String,
+    pub reason: String,
+}
+/// Stable counts derived from the target diff used to build a restore preview.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct PlanSummary {
+    pub install: usize,
+    pub already_present: usize,
+    pub update: usize,
+    pub configurations: usize,
+    pub manual: usize,
+    pub reauth: usize,
+}
+
 impl ApplicationService {
     /// Open the process-local state directory and its single journal writer.
     pub fn new() -> Result<Self, Box<ErrorEnvelope>> {
@@ -292,12 +332,39 @@ impl ApplicationService {
         output: &Path,
         selection: SelectionInput,
     ) -> Result<reforge_domain::TransportReceipt, Box<ErrorEnvelope>> {
+        self.create_package_with_cancel(output, selection, &CancellationToken::new())
+    }
+
+    /// Create a package without publishing a partial result when cancellation wins.
+    pub(crate) fn create_package_with_cancel(
+        &self,
+        output: &Path,
+        selection: SelectionInput,
+        cancellation: &CancellationToken,
+    ) -> Result<TransportReceipt, Box<ErrorEnvelope>> {
+        ensure_not_cancelled(cancellation)?;
+        require_vault_free_selection(&selection)?;
         let inventory = self.inventory()?;
+        let output = prepare_package_output(output)?;
         let preflight = host_preflight()?;
-        let (manifest, graph, selection, object_index, store) =
-            build_package_inputs(&inventory, selection, &preflight.known_folders, &self.state)?;
-        let output = output_file_path(output)?;
-        PackageWriter::new(Default::default())?.write(
+        let closure = build_selection_closure(&inventory.graph, &selection)?;
+        ensure_package_storage_available(
+            &preflight.facts,
+            &self.state.root,
+            &output,
+            closure.total_bytes,
+        )?;
+        let (manifest, graph, selection, object_index, store) = build_package_inputs(
+            &inventory,
+            selection,
+            &preflight.known_folders,
+            &self.state,
+            cancellation,
+        )?;
+        ensure_not_cancelled(cancellation)?;
+        let refreshed = host_preflight()?;
+        ensure_package_output_available(&refreshed.facts, &output, &object_index)?;
+        write_package_with_cancel(
             &output,
             PackageWriteRequest {
                 manifest: &manifest,
@@ -308,7 +375,40 @@ impl ApplicationService {
                 vault: None,
             },
             &store,
+            cancellation,
         )
+    }
+
+    /// Review an input selection before it reaches the package writer.
+    pub(crate) fn review_selection(
+        &self,
+        selection: SelectionInput,
+    ) -> Result<SelectionReview, Box<ErrorEnvelope>> {
+        let inventory = self.inventory()?;
+        let preflight = host_preflight()?;
+        review_selection(&inventory, selection, &preflight.known_folders)
+    }
+    /// Return the persisted, diff-backed counts for this exact preview.
+    pub(crate) fn plan_summary(
+        &self,
+        plan: &RestorePlan,
+    ) -> Result<PlanSummary, Box<ErrorEnvelope>> {
+        let state: RunState = read_json_state(&self.state.run_state(&plan.run_id))?;
+        if state.schema_version != STATE_SCHEMA_VERSION
+            || state.run_id != plan.run_id
+            || state.plan != *plan
+        {
+            return Err(boxed_error(
+                ReforgeErrorCode::SchemaInvalid,
+                "Persisted restore preview does not match the requested plan",
+            ));
+        }
+        state.plan_summary.ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::SchemaInvalid,
+                "This restore preview predates diff-backed plan summaries",
+            )
+        })
     }
 
     /// Build and persist a restore plan after explicit package trust approval.
@@ -332,9 +432,10 @@ impl ApplicationService {
             package.require_plan_approval()?;
         }
         let target = discover_target_with(run_id.clone(), cancellation, progress).await?;
-        let plan = build_plan(&package, mode, run_id.clone(), &target.facts)?;
+        let (plan, summary) =
+            build_plan_with_summary(&package, mode, run_id.clone(), &target.facts)?;
         self.journal.create_run(&plan)?;
-        let run_state = make_run_state(&package_path, &package, plan.clone())?;
+        let run_state = make_run_state(&package_path, &package, plan.clone(), Some(summary))?;
         write_json_state(&self.state.run_state(&run_id), &run_state)?;
         Ok(plan)
     }
@@ -362,21 +463,60 @@ impl ApplicationService {
         let mut package = PackageReader::new(package_path.clone()).inspect()?;
         package.decide_trust(reforge_package::TrustDecision::Approve)?;
         let target = discover_target_with(run_id.clone(), cancellation, progress).await?;
-        let plan = build_plan(&package, mode, run_id.clone(), &target.facts)?;
+        let (plan, summary) =
+            build_plan_with_summary(&package, mode, run_id.clone(), &target.facts)?;
         self.journal.create_run(&plan)?;
         self.journal.approve_run(&run_id)?;
-        let run_state = make_run_state(&package_path, &package, plan.clone())?;
+        let run_state = make_run_state(&package_path, &package, plan.clone(), Some(summary))?;
         write_json_state(&self.state.run_state(&run_id), &run_state)?;
-        let (report, _) = execute_to_report(
-            self.state.clone(),
-            self.journal.clone(),
-            package,
-            plan,
-            target,
-            package_path,
-            cancellation,
-        )
-        .await?;
+        let (report, _) = self
+            .execute_to_report(
+                package,
+                plan,
+                target,
+                package_path,
+                cancellation,
+                ignore_operation_progress,
+            )
+            .await?;
+        Ok(report)
+    }
+    /// Approve and execute the exact plan already previewed by the terminal UI,
+    /// reporting both target discovery and durable operation progress.
+    pub(crate) async fn execute_planned_restore_with_operation_progress<F, G>(
+        &self,
+        run_id: RunId,
+        cancellation: &CancellationToken,
+        progress: F,
+        operation_progress: G,
+    ) -> Result<RestoreReport, Box<ErrorEnvelope>>
+    where
+        F: Fn(ProgressEvent) + Send + Sync,
+        G: Fn(&Operation, OperationState, u64, u64) + Send + Sync,
+    {
+        let run_state: RunState = read_json_state(&self.state.run_state(&run_id))?;
+        if run_state.schema_version != STATE_SCHEMA_VERSION || run_state.run_id != run_id {
+            return Err(boxed_error(
+                ReforgeErrorCode::SchemaInvalid,
+                "Persisted restore preview is invalid",
+            ));
+        }
+        let package_path = existing_file_path(Path::new(&run_state.package_path), "package")?;
+        let mut package = PackageReader::new(package_path.clone()).inspect()?;
+        validate_run_package(&run_state, &package)?;
+        package.decide_trust(reforge_package::TrustDecision::Approve)?;
+        self.journal.approve_run(&run_id)?;
+        let target = discover_target_with(run_id.clone(), cancellation, progress).await?;
+        let (report, _) = self
+            .execute_to_report(
+                package,
+                run_state.plan,
+                target,
+                package_path,
+                cancellation,
+                operation_progress,
+            )
+            .await?;
         Ok(report)
     }
 
@@ -389,6 +529,26 @@ impl ApplicationService {
     ) -> Result<RestoreReport, Box<ErrorEnvelope>>
     where
         F: Fn(ProgressEvent) + Send + Sync,
+    {
+        self.resume_restore_with_operation_progress(
+            run_id,
+            cancellation,
+            progress,
+            ignore_operation_progress,
+        )
+        .await
+    }
+
+    pub async fn resume_restore_with_operation_progress<F, G>(
+        &self,
+        run_id: RunId,
+        cancellation: &CancellationToken,
+        progress: F,
+        operation_progress: G,
+    ) -> Result<RestoreReport, Box<ErrorEnvelope>>
+    where
+        F: Fn(ProgressEvent) + Send + Sync,
+        G: Fn(&Operation, OperationState, u64, u64) + Send + Sync,
     {
         let run_state: RunState = read_json_state(&self.state.run_state(&run_id))?;
         if run_state.schema_version != STATE_SCHEMA_VERSION || run_state.run_id != run_id {
@@ -403,16 +563,16 @@ impl ApplicationService {
         package.decide_trust(reforge_package::TrustDecision::Approve)?;
         let target = discover_target_with(run_id.clone(), cancellation, progress).await?;
         self.journal.require_approved(&run_id)?;
-        let (report, _) = execute_to_report(
-            self.state.clone(),
-            self.journal.clone(),
-            package,
-            run_state.plan,
-            target,
-            package_path,
-            cancellation,
-        )
-        .await?;
+        let (report, _) = self
+            .execute_to_report(
+                package,
+                run_state.plan,
+                target,
+                package_path,
+                cancellation,
+                operation_progress,
+            )
+            .await?;
         Ok(report)
     }
 
@@ -468,6 +628,15 @@ impl ApplicationService {
         ManualActionQueue::new(self.journal.clone()).acknowledge(run_id, action_id)
     }
 
+    /// Mark one pending manual action skipped without exposing journal details.
+    pub(crate) fn skip_manual_action(
+        &self,
+        run_id: &RunId,
+        action_id: &str,
+    ) -> Result<JournalManualAction, Box<ErrorEnvelope>> {
+        ManualActionQueue::new(self.journal.clone()).skip(run_id, action_id)
+    }
+
     /// Read one run and its redacted journal projections.
     pub fn run_details(
         &self,
@@ -498,6 +667,8 @@ struct RunState {
     package_object_index_digest: String,
     trust: TrustState,
     plan: RestorePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_summary: Option<PlanSummary>,
 }
 
 #[derive(Debug)]
@@ -574,15 +745,30 @@ fn parse_run_id(value: &str) -> Result<RunId, String> {
 }
 
 async fn dispatch(cli: Cli) -> Result<CommandResult, Box<ErrorEnvelope>> {
-    if cli.json && matches!(&cli.command, Command::Interactive) {
+    if cli.json
+        && cli.command.as_ref().is_none_or(|command| {
+            matches!(
+                command,
+                Command::Interactive
+                    | Command::Backup
+                    | Command::Restore {
+                        package: None,
+                        mode: None,
+                        yes_safe: false
+                    }
+            )
+        })
+    {
         return Err(boxed_error(
             ReforgeErrorCode::SchemaInvalid,
             "Interactive mode cannot emit JSON",
         ));
     }
     match cli.command {
-        Command::Scan => scan_command().await,
-        Command::Package { command } => match command {
+        None | Some(Command::Interactive) => tui::run().await,
+        Some(Command::Backup) => tui::run_quick_backup().await,
+        Some(Command::Scan) => scan_command().await,
+        Some(Command::Package { command }) => match command {
             PackageCommand::Create {
                 output,
                 selection,
@@ -590,29 +776,37 @@ async fn dispatch(cli: Cli) -> Result<CommandResult, Box<ErrorEnvelope>> {
             } => package_create_command(output, selection, secret_selection),
             PackageCommand::Inspect { path } => package_inspect_command(path),
         },
-        Command::Inventory { command } => match command {
+        Some(Command::Inventory { command }) => match command {
             InventoryCommand::Show => inventory_show_command(),
         },
-        Command::Target {
+        Some(Command::Target {
             command: TargetCommand::Scan,
-        } => target_scan_command().await,
-        Command::Plan { package, mode } => plan_command(package, mode).await,
-        Command::Restore {
-            package,
-            mode,
+        }) => target_scan_command().await,
+        Some(Command::Plan { package, mode }) => plan_command(package, mode).await,
+        Some(Command::Restore {
+            package: None,
+            mode: None,
+            yes_safe: false,
+        }) => tui::run_restore().await,
+        Some(Command::Restore {
+            package: Some(package),
+            mode: Some(mode),
             yes_safe,
-        } => restore_command(package, mode, yes_safe).await,
-        Command::Resume { run_id } => resume_command(run_id).await,
-        Command::Action { command } => match command {
+        }) => restore_command(package, mode, yes_safe).await,
+        Some(Command::Restore { .. }) => Err(boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Explicit restore requires both --package and --mode",
+        )),
+        Some(Command::Resume { run_id }) => resume_command(run_id).await,
+        Some(Command::Action { command }) => match command {
             ActionCommand::List { run_id } => action_list_command(run_id),
             ActionCommand::Acknowledge { run_id, action_id } => {
                 action_acknowledge_command(run_id, action_id)
             }
         },
-        Command::Verify { run_id } => verify_command(run_id).await,
-        Command::Report { run_id, output } => report_command(run_id, output).await,
-        Command::Doctor => doctor_command(),
-        Command::Interactive => interactive::run().await,
+        Some(Command::Verify { run_id }) => verify_command(run_id).await,
+        Some(Command::Report { run_id, output }) => report_command(run_id, output).await,
+        Some(Command::Doctor) => doctor_command(),
     }
 }
 
@@ -717,9 +911,8 @@ fn package_create_command(
     selection_path: Option<PathBuf>,
     secret_selection_path: Option<PathBuf>,
 ) -> Result<CommandResult, Box<ErrorEnvelope>> {
-    let state = state_paths()?;
-    let inventory: Inventory = read_json_state(&state.inventory)?;
-    let preflight = host_preflight()?;
+    let service = ApplicationService::new()?;
+    let inventory = service.inventory()?;
     let selection = match selection_path {
         Some(path) => read_json_input(&path, "selection")?,
         None => default_selection(&inventory.graph),
@@ -733,22 +926,7 @@ fn package_create_command(
             ));
         }
     }
-    let (manifest, graph, selection, object_index, store) =
-        build_package_inputs(&inventory, selection, &preflight.known_folders, &state)?;
-    let output = output_file_path(&output)?;
-    let writer = PackageWriter::new(Default::default())?;
-    let receipt = writer.write(
-        &output,
-        PackageWriteRequest {
-            manifest: &manifest,
-            graph: &graph,
-            selection: &selection,
-            object_index: &object_index,
-            signature: None,
-            vault: None,
-        },
-        &store,
-    )?;
+    let receipt = service.create_package(&output, selection)?;
     let payload = safe_json(&json!({
         "status": "ok",
         "package_id": receipt.package_id,
@@ -777,10 +955,11 @@ async fn plan_command(
     package.decide_trust(reforge_package::TrustDecision::Approve)?;
     let target = discover_target().await?;
     let run_id = new_run_id()?;
-    let plan = build_plan(&package, mode.into(), run_id.clone(), &target.facts)?;
+    let (plan, summary) =
+        build_plan_with_summary(&package, mode.into(), run_id.clone(), &target.facts)?;
     let journal = Journal::open(state.journal.clone())?;
     journal.create_run(&plan)?;
-    let run_state = make_run_state(&package_path, &package, plan.clone())?;
+    let run_state = make_run_state(&package_path, &package, plan.clone(), Some(summary))?;
     write_json_state(&state.run_state(&run_id), &run_state)?;
     let payload = safe_json(&json!({
         "status": "planned",
@@ -815,11 +994,12 @@ async fn restore_command(
     package.decide_trust(reforge_package::TrustDecision::Approve)?;
     let target = discover_target().await?;
     let run_id = new_run_id()?;
-    let plan = build_plan(&package, mode.into(), run_id.clone(), &target.facts)?;
+    let (plan, summary) =
+        build_plan_with_summary(&package, mode.into(), run_id.clone(), &target.facts)?;
     let journal = Journal::open(state.journal.clone())?;
     journal.create_run(&plan)?;
     journal.approve_run(&run_id)?;
-    let run_state = make_run_state(&package_path, &package, plan.clone())?;
+    let run_state = make_run_state(&package_path, &package, plan.clone(), Some(summary))?;
     write_json_state(&state.run_state(&run_id), &run_state)?;
     execute_and_report(state, package, plan, target, package_path).await
 }
@@ -955,20 +1135,26 @@ fn doctor_command() -> Result<CommandResult, Box<ErrorEnvelope>> {
         "state_directory_ready": state.root,
         "os_version": preflight.facts.os_version,
         "os_build": preflight.facts.os_build,
+        "elevated": preflight.facts.elevated,
+        "free_bytes": preflight.facts.free_bytes,
         "known_folder_count": preflight.known_folders.entries.len(),
         "warning_count": preflight.warnings.len(),
     }))?;
     Ok(CommandResult {
         human: format!(
-            "Doctor: ready ({} known folders, {} warnings).\n",
+            "Doctor: ready ({} known folders, {} warnings, administrator: {}).\n",
             preflight.known_folders.entries.len(),
-            preflight.warnings.len()
+            preflight.warnings.len(),
+            if preflight.facts.elevated {
+                "yes"
+            } else {
+                "no"
+            }
         ),
         payload,
         exit_code: 0,
     })
 }
-
 async fn execute_and_report(
     state: StatePaths,
     package: InspectedPackage,
@@ -977,16 +1163,16 @@ async fn execute_and_report(
     package_path: PathBuf,
 ) -> Result<CommandResult, Box<ErrorEnvelope>> {
     let journal = Journal::open(state.journal.clone())?;
-    let (report, execution_error) = execute_to_report(
-        state,
-        journal,
-        package,
-        plan,
-        target,
-        package_path,
-        &CancellationToken::new(),
-    )
-    .await?;
+    let (report, execution_error) = ApplicationService { state, journal }
+        .execute_to_report(
+            package,
+            plan,
+            target,
+            package_path,
+            &CancellationToken::new(),
+            ignore_operation_progress,
+        )
+        .await?;
     let mut result = report_result(report)?;
     if let Some(error) = execution_error
         && result.exit_code == 0
@@ -996,36 +1182,72 @@ async fn execute_and_report(
     Ok(result)
 }
 
-async fn execute_to_report(
-    state: StatePaths,
-    journal: Journal,
-    package: InspectedPackage,
-    plan: RestorePlan,
-    target: TargetSnapshot,
-    package_path: PathBuf,
-    cancellation: &CancellationToken,
-) -> Result<(RestoreReport, Option<Box<ErrorEnvelope>>), Box<ErrorEnvelope>> {
-    let source = PackageObjectSource {
-        reader: PackageReader::new(package_path),
-    };
-    let context =
-        ExecutionContext::new(&target.facts, &package.object_index).with_object_source(&source);
-    let executor = configured_executor(journal.clone(), target.known_folders);
-    let execution_error = executor.execute(&plan, &context, cancellation).await.err();
-    if let Some(error) = &execution_error
-        && matches!(
-            error.code,
-            ReforgeErrorCode::TargetConflict
-                | ReforgeErrorCode::PackageUntrusted
-                | ReforgeErrorCode::SecurityPolicy
-        )
+impl ApplicationService {
+    async fn execute_to_report<G>(
+        &self,
+        package: InspectedPackage,
+        plan: RestorePlan,
+        target: TargetSnapshot,
+        package_path: PathBuf,
+        cancellation: &CancellationToken,
+        operation_progress: G,
+    ) -> Result<(RestoreReport, Option<Box<ErrorEnvelope>>), Box<ErrorEnvelope>>
+    where
+        G: Fn(&Operation, OperationState, u64, u64) + Send + Sync,
     {
-        return Err(error.clone());
+        let source = PackageObjectSource {
+            reader: PackageReader::new(package_path),
+        };
+        let context = ExecutionContext::new(&target.facts, &package.object_index)
+            .with_object_source(&source)
+            .with_file_manifests(&package.file_manifests);
+        let executor = configured_executor(self.journal.clone(), target.known_folders.clone());
+        let execution_error = executor
+            .execute_with_progress(&plan, &context, cancellation, operation_progress)
+            .await
+            .err();
+        if let Some(error) = &execution_error
+            && matches!(
+                error.code,
+                ReforgeErrorCode::TargetConflict
+                    | ReforgeErrorCode::PackageUntrusted
+                    | ReforgeErrorCode::SecurityPolicy
+            )
+        {
+            return Err(error.clone());
+        }
+
+        let cancelled = cancellation.is_cancelled()
+            || execution_error
+                .as_ref()
+                .is_some_and(|error| error.code == ReforgeErrorCode::Cancelled);
+        let verification_target = if cancelled {
+            target.facts
+        } else {
+            match discover_target_with(plan.run_id.clone(), cancellation, ignore_discovery_progress)
+                .await
+            {
+                Ok(post_restore) => {
+                    write_json_state(&self.state.target, &post_restore.facts)?;
+                    post_restore.facts
+                }
+                Err(error)
+                    if error.code == ReforgeErrorCode::Cancelled || cancellation.is_cancelled() =>
+                {
+                    target.facts
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let report = build_report(&plan, &package, &verification_target, &self.journal)?;
+        write_json_state(&self.state.report_state(&plan.run_id), &report)?;
+        Ok((report, execution_error))
     }
-    let report = build_report(&plan, &package, &target.facts, &journal)?;
-    write_json_state(&state.report_state(&plan.run_id), &report)?;
-    Ok((report, execution_error))
 }
+
+fn ignore_discovery_progress(_: ProgressEvent) {}
+
+fn ignore_operation_progress(_: &Operation, _: OperationState, _: u64, _: u64) {}
 
 fn configured_executor(journal: Journal, roots: KnownFolderMap) -> Executor {
     let mut executor = Executor::new(journal.clone());
@@ -1163,6 +1385,403 @@ mod manual_action_component_tests {
     }
 }
 
+#[cfg(test)]
+mod secret_screening_tests {
+    use super::*;
+
+    const SECRETS: [&str; 5] = [
+        "ctx7sk-json-secret",
+        "ctx7sk-jsonc-secret",
+        "ctx7sk-jsonc-comment-secret",
+        "ctx7sk-toml-secret",
+        "ctx7sk-metadata-secret",
+    ];
+
+    #[tokio::test]
+    async fn context7_headers_and_safe_config_never_reach_package_or_object_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "reforge-secret-screen-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let profile = root.join("profile");
+        let state_root = root.join("state");
+        fs::create_dir_all(&profile).expect("screening fixture profile");
+        fs::create_dir_all(&state_root).expect("screening fixture state");
+
+        let fixtures = [
+            (
+                'j',
+                "config.json",
+                ContentType::Json,
+                br#"{"context7":{"headers":{"CONTEXT7_API_KEY":"ctx7sk-json-secret"}},"safe":{"mode":"on"}}"#.to_vec(),
+            ),
+            (
+                'c',
+                "config.jsonc",
+                ContentType::Jsonc,
+                br#"// ctx7sk-jsonc-comment-secret
+{"context7":{"headers":{"CONTEXT7_API_KEY":"ctx7sk-jsonc-secret"}},"safe":{"mode":"on"}}"#.to_vec(),
+            ),
+            (
+                't',
+                "config.toml",
+                ContentType::Toml,
+                br#"[context7.headers]
+CONTEXT7_API_KEY = "ctx7sk-toml-secret"
+[safe]
+mode = "on"
+"#.to_vec(),
+            ),
+        ];
+        let mut components = Vec::new();
+        for (suffix, relative, content_type, bytes) in fixtures {
+            fs::write(profile.join(relative), &bytes).expect("write config fixture");
+            let mut component = test_component(suffix);
+            let artifact = reforge_domain::ArtifactRef {
+                id: ArtifactId::new(format!("artifact-{suffix}")).expect("artifact ID"),
+                source_path: PathToken::new(KnownFolderToken::UserProfile, relative)
+                    .expect("path token"),
+                scope: reforge_domain::ConfigScope::User,
+                size_bytes: bytes.len() as u64,
+                content_type,
+                policy: ArtifactPolicy::Config,
+                object: None,
+            };
+            component.selection.size_bytes = artifact.size_bytes;
+            component.artifacts.push(artifact);
+            component
+                .verification
+                .push(reforge_domain::VerificationRule::ConfigParses {
+                    destination: component.artifacts[0].source_path.clone(),
+                    content_type: component.artifacts[0].content_type.clone(),
+                });
+            component.extensions.insert(
+                "safe_config".to_owned(),
+                json!({
+                    "context7": {"headers": {"CONTEXT7_API_KEY": "ctx7sk-metadata-secret"}},
+                    "safe": {"mode": "on"}
+                }),
+            );
+            components.push(component);
+        }
+
+        let folders = KnownFolderMap::from_entries(BTreeMap::from([(
+            KnownFolderToken::UserProfile,
+            profile,
+        )]));
+        let host = HostFacts {
+            os_version: "Windows 11".to_owned(),
+            os_build: "fixture".to_owned(),
+            architecture: reforge_domain::Architecture::X64,
+            elevated: false,
+            account_scope: reforge_domain::AccountScope::User,
+            sid_fingerprint: None,
+            known_folders: vec![
+                PathToken::new(KnownFolderToken::UserProfile, "").expect("root token"),
+            ],
+            drives: Vec::new(),
+            free_bytes: vec![reforge_domain::DriveFreeSpace {
+                token: "H:".to_owned(),
+                bytes: 10 * 1024 * 1024 * 1024,
+            }],
+        };
+        let inventory = Inventory {
+            format_version: 1,
+            scan_id: new_run_id().expect("scan ID"),
+            captured_at: Utc::now(),
+            host,
+            graph: PackageGraph {
+                components: components.clone(),
+                edges: Vec::new(),
+            },
+            evidence: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let selection = SelectionInput {
+            components: components
+                .iter()
+                .map(|component| component.id.clone())
+                .collect(),
+            artifacts: Vec::new(),
+            policy: SelectionPolicy {
+                secrets: SecretSelectionPolicy::Exclude,
+                large_data: reforge_domain::LargeDataSelectionPolicy::Exclude,
+                unknown_binaries: reforge_domain::UnknownBinarySelectionPolicy::Exclude,
+                max_bytes: None,
+            },
+        };
+        let review =
+            review_selection(&inventory, selection.clone(), &folders).expect("selection screening");
+        assert_eq!(review.selected_artifacts.len(), 3);
+        assert!(!review.secret_findings.is_empty());
+        for finding in &review.secret_findings {
+            let rendered = format!(
+                "{} {} {}",
+                finding.component_name, finding.artifact_path, finding.reason
+            );
+            assert!(SECRETS.iter().all(|secret| !rendered.contains(secret)));
+        }
+
+        let state = StatePaths {
+            inventory: state_root.join("inventory.json"),
+            target: state_root.join("target.json"),
+            journal: state_root.join("journal.sqlite"),
+            root: state_root,
+        };
+        let (manifest, graph, selection, object_index, store) = build_package_inputs(
+            &inventory,
+            selection,
+            &folders,
+            &state,
+            &CancellationToken::new(),
+        )
+        .expect("safe package inputs");
+        let package_path = root.join("screened.reforge");
+        let request = || PackageWriteRequest {
+            manifest: &manifest,
+            graph: &graph,
+            selection: &selection,
+            object_index: &object_index,
+            signature: None,
+            vault: None,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let error = write_package_with_cancel(&package_path, request(), &store, &cancelled)
+            .expect_err("cancelled backup must not be published");
+        assert_eq!(error.code, ReforgeErrorCode::Cancelled);
+        assert!(!package_path.try_exists().expect("check cancelled output"));
+        write_package_with_cancel(&package_path, request(), &store, &CancellationToken::new())
+            .expect("write screened package");
+
+        let occupied = root.join("occupied.reforge");
+        fs::write(&occupied, b"existing backup").expect("existing backup fixture");
+        write_package_with_cancel(&occupied, request(), &store, &CancellationToken::new())
+            .expect_err("publication must not overwrite an existing backup");
+        assert_eq!(fs::read(&occupied).unwrap(), b"existing backup");
+
+        let package_bytes = fs::read(&package_path).expect("read package bytes");
+        assert!(
+            SECRETS
+                .iter()
+                .all(|secret| !contains_bytes(&package_bytes, secret))
+        );
+        let reader = PackageReader::new(package_path.clone());
+        let mut inspected = reader.inspect().expect("inspect screened package");
+        let graph_bytes = serde_json::to_vec(&inspected.graph).expect("serialize graph");
+        assert!(
+            SECRETS
+                .iter()
+                .all(|secret| !contains_bytes(&graph_bytes, secret))
+        );
+        for component in &inspected.graph.components {
+            assert_eq!(component.extensions["safe_config"]["safe"]["mode"], "on");
+        }
+        for entry in &inspected.object_index.objects {
+            let mut bytes = Vec::new();
+            reader
+                .copy_verified_object(&entry.id, &mut bytes)
+                .expect("copy verified object");
+            assert!(SECRETS.iter().all(|secret| !contains_bytes(&bytes, secret)));
+        }
+
+        // Exercise the actual planner, payload source, handlers and verifier:
+        // the archive's artifact object names a file manifest, not config bytes.
+        let destination = root.join("restored-profile");
+        fs::create_dir(&destination).expect("restore destination");
+        let target_roots = KnownFolderMap::from_entries(BTreeMap::from([(
+            KnownFolderToken::UserProfile,
+            destination.clone(),
+        )]));
+        let mut target_inventory = inventory.clone();
+        target_inventory.graph.components.clear();
+        target_inventory.graph.edges.clear();
+        let target = TargetScanner::new()
+            .scan(target_inventory)
+            .expect("empty target");
+        inspected
+            .decide_trust(reforge_package::TrustDecision::Approve)
+            .expect("approve fixture");
+        let (plan, _) = build_plan_with_summary(
+            &inspected,
+            RestoreMode::Migration,
+            new_run_id().expect("restore run ID"),
+            &target,
+        )
+        .expect("plan configuration restore");
+        let journal = Journal::open(state.journal.clone()).expect("fixture journal");
+        journal.create_run(&plan).expect("persist unapproved plan");
+        let source = PackageObjectSource {
+            reader: PackageReader::new(package_path),
+        };
+        let context = ExecutionContext::new(&target, &inspected.object_index)
+            .with_object_source(&source)
+            .with_file_manifests(&inspected.file_manifests);
+        let executor = configured_executor(journal.clone(), target_roots);
+        executor
+            .execute(&plan, &context, &CancellationToken::new())
+            .await
+            .expect_err("an unapproved plan must not mutate the target");
+        assert!(!destination.join("config.json").exists());
+        journal.approve_run(&plan.run_id).expect("approve restore");
+        executor
+            .execute(&plan, &context, &CancellationToken::new())
+            .await
+            .expect("restore verified file payloads");
+        for (name, content_type) in [
+            ("config.json", ContentType::Json),
+            ("config.jsonc", ContentType::Json),
+            ("config.toml", ContentType::Toml),
+        ] {
+            let restored = fs::read_to_string(destination.join(name)).expect("restored config");
+            let document =
+                parse_config_document(&restored, &content_type).expect("parse restored config");
+            assert_eq!(document["safe"]["mode"], "on");
+            assert!(
+                document["context7"]["headers"]
+                    .get("CONTEXT7_API_KEY")
+                    .is_none()
+            );
+            assert!(SECRETS.iter().all(|secret| !restored.contains(secret)));
+        }
+        let report =
+            build_report(&plan, &inspected, &target, &journal).expect("verified restore report");
+        assert_eq!(report.counts.verified, 3);
+        assert_eq!(report.counts.failed, 0);
+        drop(executor);
+        drop(journal);
+
+        fs::remove_dir_all(root).expect("remove screening fixture");
+    }
+
+    #[test]
+    fn package_capacity_checks_the_correct_volume_and_fails_closed() {
+        let mut facts: HostFacts = serde_json::from_value(json!({
+            "os_version": "Windows 11", "os_build": "fixture", "architecture": "X64",
+            "elevated": false, "account_scope": "USER", "sid_fingerprint": null,
+            "known_folders": [], "drives": [],
+            "free_bytes": [{"token": "C:", "bytes": 1_000_000}, {"token": "D:", "bytes": 99}]
+        }))
+        .expect("host fixture");
+        let output = Path::new(r"D:\backups\fixture.reforge");
+        assert_eq!(
+            ensure_volume_free_space(&facts, output, 100, "package output")
+                .unwrap_err()
+                .code,
+            ReforgeErrorCode::InsufficientDisk
+        );
+        facts.free_bytes[1].bytes = 100;
+        assert!(ensure_volume_free_space(&facts, output, 100, "package output").is_ok());
+        facts.free_bytes.pop();
+        assert_eq!(
+            ensure_volume_free_space(&facts, output, 100, "package output")
+                .unwrap_err()
+                .code,
+            ReforgeErrorCode::SourceUnavailable
+        );
+        let mut same_volume = facts.clone();
+        same_volume.free_bytes[0].bytes = 100 * 1024 * 1024;
+        assert_eq!(
+            ensure_package_storage_available(
+                &same_volume,
+                Path::new(r"C:\state"),
+                Path::new(r"C:\backups\fixture.reforge"),
+                1,
+            )
+            .unwrap_err()
+            .code,
+            ReforgeErrorCode::InsufficientDisk
+        );
+        same_volume.free_bytes[0].bytes = 129 * 1024 * 1024;
+        ensure_package_storage_available(
+            &same_volume,
+            Path::new(r"C:\state"),
+            Path::new(r"C:\backups\fixture.reforge"),
+            1,
+        )
+        .expect("combined same-volume reserve");
+        assert_eq!(
+            ensure_package_storage_available(&facts, Path::new(r"C:\state"), output, u64::MAX)
+                .unwrap_err()
+                .code,
+            ReforgeErrorCode::InsufficientDisk
+        );
+    }
+
+    #[test]
+    fn unavailable_backup_directory_preserves_existing_file() {
+        let root = std::env::temp_dir().join(format!("reforge-output-{}", Uuid::now_v7()));
+        fs::create_dir(&root).expect("fixture directory");
+        let blocker = root.join("not-a-directory");
+        fs::write(&blocker, b"existing user data").expect("blocking file");
+        let output = blocker.join("backup.reforge");
+        prepare_package_output(&output).expect_err("unavailable directory must fail");
+        assert_eq!(fs::read(&blocker).unwrap(), b"existing user data");
+        assert!(!output.is_file());
+        fs::remove_dir_all(root).expect("remove output fixture");
+    }
+
+    fn contains_bytes(bytes: &[u8], needle: &str) -> bool {
+        bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    fn test_component(suffix: char) -> Component {
+        serde_json::from_value(json!({
+            "id": format!("cmp_{}", suffix.to_string().repeat(52)),
+            "kind": "CONFIGURATION",
+            "identity": {
+                "provider_package": null,
+                "provider_source": null,
+                "package_family": null,
+                "product_name": "Context7 fixture",
+                "executable_name": null,
+                "publisher": null,
+                "executable_hash": null,
+                "install_role": null,
+                "identity_quality": "LOCAL"
+            },
+            "display_name": "Context7 configuration",
+            "version": null,
+            "architecture": null,
+            "publisher": null,
+            "provenance": null,
+            "evidence": [],
+            "confidence": "HIGH",
+            "dependencies": [],
+            "artifacts": [],
+            "restore": {
+                "primary": "CONFIG_PORTABLE",
+                "alternatives": [],
+                "portability": "PORTABLE",
+                "requires_elevation": false,
+                "requires_user_action": false,
+                "rationale": []
+            },
+            "compatibility": {
+                "required_os": null,
+                "required_architecture": null,
+                "requires_provider": null,
+                "requires_runtime": null,
+                "requires_elevation": false,
+                "requires_wsl": false,
+                "requires_docker": false
+            },
+            "verification": [],
+            "selection": {
+                "recommended": true,
+                "score": 50,
+                "selected_by_default": true,
+                "sensitive": false,
+                "size_bytes": 0
+            }
+        }))
+        .expect("component fixture")
+    }
+}
+
 fn report_result(report: RestoreReport) -> Result<CommandResult, Box<ErrorEnvelope>> {
     let exit_code = report_exit_code(&report);
     let human = report::format_report(&report);
@@ -1187,12 +1806,12 @@ fn report_exit_code(report: &RestoreReport) -> i32 {
     }
 }
 
-fn build_plan(
+fn build_plan_with_summary(
     package: &InspectedPackage,
     mode: RestoreMode,
     run_id: RunId,
     target: &TargetFacts,
-) -> Result<RestorePlan, Box<ErrorEnvelope>> {
+) -> Result<(RestorePlan, PlanSummary), Box<ErrorEnvelope>> {
     package.require_plan_approval()?;
     let selection = build_selection_closure(&package.graph, &package.selection)?;
     let diff = DiffEngine::new().compare(&package.graph, target)?;
@@ -1210,17 +1829,91 @@ fn build_plan(
         package.graph.clone(),
         selection,
         package.trust.clone(),
-        diff,
+        diff.clone(),
         compatibility,
         package.object_index.clone(),
     );
-    RestorePlanner::new().plan(input)
+    let plan = RestorePlanner::new().plan(input)?;
+    let summary = summarize_plan(&package.graph, &plan, &diff);
+    Ok((plan, summary))
+}
+
+fn summarize_plan(graph: &PackageGraph, plan: &RestorePlan, diff: &TargetDiff) -> PlanSummary {
+    let mut mutating_components = BTreeSet::new();
+    let mut configuration_components = BTreeSet::new();
+    let mut reauth_components = BTreeSet::new();
+    let reauth_candidates = graph
+        .components
+        .iter()
+        .filter(|component| component.restore.primary == RestoreStrategy::ReauthRequired)
+        .map(|component| component.id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for operation in &plan.operations {
+        match &operation.kind {
+            reforge_domain::OperationKind::WriteFile { .. }
+            | reforge_domain::OperationKind::MergeJson { .. }
+            | reforge_domain::OperationKind::MergeToml { .. }
+            | reforge_domain::OperationKind::SetUserEnvironment { .. }
+            | reforge_domain::OperationKind::AppendUserPath { .. }
+            | reforge_domain::OperationKind::RegisterMcp { .. } => {
+                mutating_components.insert(operation.component.clone());
+                configuration_components.insert(operation.component.clone());
+            }
+            reforge_domain::OperationKind::EnsureProvider { .. }
+            | reforge_domain::OperationKind::InstallPackage { .. }
+            | reforge_domain::OperationKind::EnsureRuntime { .. }
+            | reforge_domain::OperationKind::ImportWsl { .. }
+            | reforge_domain::OperationKind::RestoreDockerImage { .. }
+            | reforge_domain::OperationKind::RestoreDockerVolume { .. }
+            | reforge_domain::OperationKind::InstallVsCodeExtension { .. } => {
+                mutating_components.insert(operation.component.clone());
+            }
+            reforge_domain::OperationKind::OpenManualAction { .. } => {
+                if reauth_candidates.contains(&operation.component) {
+                    reauth_components.insert(operation.component.clone());
+                }
+            }
+            reforge_domain::OperationKind::RequireReboot { .. }
+            | reforge_domain::OperationKind::Verify { .. } => {}
+        }
+    }
+
+    let mut summary = PlanSummary {
+        install: 0,
+        already_present: 0,
+        update: 0,
+        configurations: 0,
+        manual: plan.manual_actions.len(),
+        reauth: reauth_components.len(),
+    };
+    for component in &plan.selected_components {
+        let Some(component_diff) = diff.component(component) else {
+            continue;
+        };
+        if matches!(
+            component_diff.disposition,
+            ComponentDisposition::Skip | ComponentDisposition::PreserveTarget
+        ) {
+            summary.already_present += 1;
+        } else if configuration_components.contains(component) {
+            summary.configurations += 1;
+        } else if mutating_components.contains(component) {
+            if component_diff.target_present {
+                summary.update += 1;
+            } else {
+                summary.install += 1;
+            }
+        }
+    }
+    summary
 }
 
 fn make_run_state(
     package_path: &Path,
     package: &InspectedPackage,
     plan: RestorePlan,
+    plan_summary: Option<PlanSummary>,
 ) -> Result<RunState, Box<ErrorEnvelope>> {
     Ok(RunState {
         schema_version: STATE_SCHEMA_VERSION,
@@ -1233,6 +1926,7 @@ fn make_run_state(
         package_object_index_digest: package.manifest.object_index_digest.clone(),
         trust: package.trust.clone(),
         plan,
+        plan_summary,
     })
 }
 
@@ -1260,11 +1954,632 @@ fn validate_run_package(
     Ok(())
 }
 
+const MAX_SECRET_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_FINDING_PATH_BYTES: usize = 512;
+const PACKAGE_STORAGE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum FieldPathPart {
+    Key(String),
+    Index(usize),
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FieldPath(Vec<FieldPathPart>);
+
+impl FieldPath {
+    fn root() -> Self {
+        Self(Vec::new())
+    }
+
+    fn key(&self, key: &str) -> Self {
+        let mut parts = self.0.clone();
+        parts.push(FieldPathPart::Key(key.to_owned()));
+        Self(parts)
+    }
+
+    fn index(&self, index: usize) -> Self {
+        let mut parts = self.0.clone();
+        parts.push(FieldPathPart::Index(index));
+        Self(parts)
+    }
+
+    fn label(&self) -> String {
+        let mut label = String::from("$");
+        for part in &self.0 {
+            match part {
+                FieldPathPart::Key(key) => {
+                    label.push('.');
+                    label.push_str(&safe_field_name(key));
+                }
+                FieldPathPart::Index(index) => {
+                    label.push('[');
+                    label.push_str(&index.to_string());
+                    label.push(']');
+                }
+            }
+        }
+        RedactionPolicy::with_max_bytes(MAX_FINDING_PATH_BYTES)
+            .redact_text(&label)
+            .unwrap_or_else(|| "$".to_owned())
+    }
+}
+
+#[derive(Debug)]
+struct ArtifactScreening {
+    bytes: Option<Vec<u8>>,
+    safe_config: Option<Value>,
+    findings: BTreeSet<FieldPath>,
+}
+
+fn review_selection(
+    inventory: &Inventory,
+    mut selection: SelectionInput,
+    known_folders: &KnownFolderMap,
+) -> Result<SelectionReview, Box<ErrorEnvelope>> {
+    let initial = build_selection_closure(&inventory.graph, &selection)?;
+    let selected_components: BTreeSet<_> = initial.selected_components.iter().cloned().collect();
+    let selected_artifacts: BTreeSet<_> = initial.selected_artifacts.iter().cloned().collect();
+    let auto_added: BTreeSet<_> = initial.auto_added_dependencies.iter().cloned().collect();
+    let mut findings = BTreeSet::<(String, String, String)>::new();
+
+    for component in &inventory.graph.components {
+        if !selected_components.contains(&component.id) {
+            continue;
+        }
+        let dependency_auto_added = auto_added.contains(&component.id);
+        if component.selection.sensitive || component.kind == ComponentKind::SecretReference {
+            return Err(boxed_error(
+                ReforgeErrorCode::VaultRequired,
+                "Selected content requires an encrypted vault",
+            ));
+        }
+        if dependency_auto_added && component_has_unsafe_binary_shape(component) {
+            return Err(boxed_error(
+                ReforgeErrorCode::SecurityPolicy,
+                "A required dependency is not safe to add automatically",
+            ));
+        }
+
+        let metadata_path = component
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.policy == ArtifactPolicy::Config)
+            .map(|artifact| artifact.source_path.relative.as_str())
+            .unwrap_or("package metadata");
+        let metadata_findings = extension_findings(&component.extensions)?;
+        for path in &metadata_findings {
+            insert_secret_finding(&mut findings, component, metadata_path, path);
+        }
+        if dependency_auto_added && !metadata_findings.is_empty() {
+            return Err(boxed_error(
+                ReforgeErrorCode::SecurityPolicy,
+                "A required dependency has unsafe metadata and cannot be added automatically",
+            ));
+        }
+
+        for artifact in &component.artifacts {
+            if !selected_artifacts.contains(&artifact.id) {
+                continue;
+            }
+            if artifact.policy == ArtifactPolicy::SecretReference {
+                return Err(boxed_error(
+                    ReforgeErrorCode::VaultRequired,
+                    "Selected secret content requires an encrypted vault",
+                ));
+            }
+            if !is_screened_content_type(&artifact.content_type) {
+                if dependency_auto_added {
+                    return Err(boxed_error(
+                        ReforgeErrorCode::SecurityPolicy,
+                        "A required dependency contains an unscreened artifact",
+                    ));
+                }
+                continue;
+            }
+            let screening = scan_secret_like_artifact(
+                known_folders,
+                component.extensions.get("safe_config"),
+                artifact,
+            )?;
+            for path in &screening.findings {
+                insert_secret_finding(
+                    &mut findings,
+                    component,
+                    &artifact.source_path.relative,
+                    path,
+                );
+            }
+            if dependency_auto_added && !screening.findings.is_empty() {
+                return Err(boxed_error(
+                    ReforgeErrorCode::SecurityPolicy,
+                    "A required dependency contains secret-like content and cannot be added automatically",
+                ));
+            }
+            if screening.bytes.is_none() {
+                set_artifact_inclusion(&mut selection, &artifact.id, false);
+            }
+        }
+    }
+
+    let final_closure = build_selection_closure(&inventory.graph, &selection)?;
+    let secret_findings = findings
+        .into_iter()
+        .map(|(component_name, artifact_path, reason)| SecretFinding {
+            component_name,
+            artifact_path,
+            reason,
+        })
+        .collect();
+    Ok(SelectionReview {
+        selection,
+        selected_components: final_closure.selected_components,
+        selected_artifacts: final_closure.selected_artifacts,
+        total_bytes: final_closure.total_bytes,
+        secret_findings,
+    })
+}
+
+fn component_has_unsafe_binary_shape(component: &Component) -> bool {
+    component.kind == ComponentKind::PortableBinary
+        || component.restore.primary == RestoreStrategy::PortableBinary
+        || component
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.policy == ArtifactPolicy::PortableBinary)
+        || (component.kind == ComponentKind::Unknown
+            && (component.identity.executable_name.is_some()
+                || component.identity.executable_hash.is_some()))
+}
+
+fn scan_secret_like_artifact(
+    known_folders: &KnownFolderMap,
+    adapter_safe_config: Option<&Value>,
+    artifact: &reforge_domain::ArtifactRef,
+) -> Result<ArtifactScreening, Box<ErrorEnvelope>> {
+    let bytes = match read_bounded_artifact(known_folders, artifact) {
+        Ok(bytes) => bytes,
+        Err(error) if error.code == ReforgeErrorCode::SecurityPolicy => {
+            return Ok(ArtifactScreening {
+                bytes: None,
+                safe_config: None,
+                findings: BTreeSet::from([FieldPath::root()]),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let Some(text) = std::str::from_utf8(&bytes).ok() else {
+        return Ok(ArtifactScreening {
+            bytes: None,
+            safe_config: None,
+            findings: BTreeSet::from([FieldPath::root()]),
+        });
+    };
+
+    if artifact.content_type == ContentType::Utf8Text {
+        let safe = RedactionPolicy::with_max_bytes(MAX_SECRET_SCAN_BYTES as usize)
+            .redact_text(text)
+            .is_some_and(|redacted| redacted == text);
+        return Ok(if safe {
+            ArtifactScreening {
+                bytes: Some(bytes),
+                safe_config: None,
+                findings: BTreeSet::new(),
+            }
+        } else {
+            ArtifactScreening {
+                bytes: None,
+                safe_config: None,
+                findings: BTreeSet::from([FieldPath::root()]),
+            }
+        });
+    }
+
+    let Some(document) = parse_config_document(text, &artifact.content_type) else {
+        return Ok(ArtifactScreening {
+            bytes: None,
+            safe_config: None,
+            findings: BTreeSet::from([FieldPath::root()]),
+        });
+    };
+    let blocked = unsafe_value_paths(&document);
+    let mut findings = blocked.clone();
+
+    if artifact.policy == ArtifactPolicy::Config
+        && let Some(adapter_safe_config) = adapter_safe_config
+    {
+        let adapter_blocked = unsafe_value_paths(adapter_safe_config);
+        // The normalized metadata is independently sanitized below.  Its paths
+        // are reported against metadata, not blindly applied to file paths.
+        findings.extend(adapter_blocked.iter().cloned());
+    }
+    let source_text_is_safe = RedactionPolicy::with_max_bytes(MAX_SECRET_SCAN_BYTES as usize)
+        .redact_text(text)
+        .is_some_and(|redacted| redacted == text);
+    if !source_text_is_safe {
+        // JSONC/TOML comments are not represented in the parsed tree. Rewriting
+        // the safe tree drops any secret-like comment or header bytes.
+        findings.insert(FieldPath::root());
+    }
+
+    let safe_document = filtered_value(&document, &FieldPath::root(), &blocked);
+    let safe_bytes = if findings.is_empty() {
+        Some(bytes)
+    } else {
+        safe_document
+            .as_ref()
+            .and_then(|value| serialize_config_document(value, &artifact.content_type))
+    };
+    Ok(ArtifactScreening {
+        bytes: safe_bytes,
+        safe_config: (artifact.policy == ArtifactPolicy::Config)
+            .then_some(safe_document)
+            .flatten(),
+        findings,
+    })
+}
+
+fn is_screened_content_type(content_type: &ContentType) -> bool {
+    matches!(
+        content_type,
+        ContentType::Utf8Text | ContentType::Json | ContentType::Jsonc | ContentType::Toml
+    )
+}
+
+fn read_bounded_artifact(
+    known_folders: &KnownFolderMap,
+    artifact: &reforge_domain::ArtifactRef,
+) -> Result<Vec<u8>, Box<ErrorEnvelope>> {
+    let root = known_folders
+        .entries
+        .get(&artifact.source_path.root)
+        .ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::PathNotFound,
+                "The selected artifact root is unavailable",
+            )
+        })?;
+    let safe_path = SafePath::new(artifact.source_path.relative.clone())?;
+    let mut reader = BoundedFileReader::open(root, &safe_path, MAX_SECRET_SCAN_BYTES)?;
+    let mut bytes = Vec::new();
+    reader.stream_into(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn parse_config_document(text: &str, content_type: &ContentType) -> Option<Value> {
+    match content_type {
+        ContentType::Json => serde_json::from_str(text).ok(),
+        ContentType::Jsonc => json5::from_str(text).ok(),
+        ContentType::Toml => toml::from_str::<toml::Value>(text)
+            .ok()
+            .and_then(|value| serde_json::to_value(value).ok()),
+        _ => None,
+    }
+}
+
+fn serialize_config_document(value: &Value, content_type: &ContentType) -> Option<Vec<u8>> {
+    match content_type {
+        ContentType::Json | ContentType::Jsonc => serde_json::to_vec_pretty(value).ok(),
+        ContentType::Toml => {
+            let value = serde_json::from_value::<toml::Value>(value.clone()).ok()?;
+            toml::to_string_pretty(&value).ok().map(String::into_bytes)
+        }
+        _ => None,
+    }
+}
+
+fn unsafe_value_paths(value: &Value) -> BTreeSet<FieldPath> {
+    let mut findings = BTreeSet::new();
+    collect_unsafe_value_paths(value, &FieldPath::root(), 0, &mut findings);
+    findings
+}
+
+fn collect_unsafe_value_paths(
+    value: &Value,
+    path: &FieldPath,
+    depth: usize,
+    findings: &mut BTreeSet<FieldPath>,
+) {
+    let policy = RedactionPolicy::default();
+    if depth > policy.max_depth() {
+        findings.insert(path.clone());
+        return;
+    }
+    match value {
+        Value::Object(object) => {
+            if normalized_secret_marker(object) {
+                findings.insert(path.clone());
+                return;
+            }
+            for (key, value) in object {
+                let child = path.key(key);
+                if metadata_key_is_sensitive(key) {
+                    findings.insert(child);
+                } else {
+                    collect_unsafe_value_paths(value, &child, depth + 1, findings);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                collect_unsafe_value_paths(value, &path.index(index), depth + 1, findings);
+            }
+        }
+        Value::String(value) => {
+            let stable = !matches!(value.as_str(), "<REDACTED>" | "<PATH>")
+                && policy
+                    .redact_text(value)
+                    .is_some_and(|redacted| redacted == *value);
+            if !stable {
+                findings.insert(path.clone());
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn normalized_secret_marker(object: &serde_json::Map<String, Value>) -> bool {
+    object
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "SECRET_REFERENCE" | "REDACTED_UNKNOWN"))
+        || (object.len() == 1 && object.get("redacted").and_then(Value::as_bool) == Some(true))
+}
+
+fn metadata_key_is_sensitive(key: &str) -> bool {
+    RedactionPolicy::default().is_sensitive_key(key)
+}
+
+fn filtered_value(value: &Value, path: &FieldPath, blocked: &BTreeSet<FieldPath>) -> Option<Value> {
+    if blocked.contains(path) {
+        return None;
+    }
+    match value {
+        Value::Object(object) => Some(Value::Object(
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    filtered_value(value, &path.key(key), blocked).map(|value| (key.clone(), value))
+                })
+                .collect(),
+        )),
+        Value::Array(values) => Some(Value::Array(
+            values
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| filtered_value(value, &path.index(index), blocked))
+                .collect(),
+        )),
+        _ => Some(value.clone()),
+    }
+}
+
+fn extension_findings(
+    extensions: &BTreeMap<String, Value>,
+) -> Result<BTreeSet<FieldPath>, Box<ErrorEnvelope>> {
+    let value = serde_json::to_value(extensions).map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Component metadata could not be screened",
+        )
+    })?;
+    Ok(unsafe_value_paths(&value))
+}
+
+fn sanitize_extensions(
+    extensions: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, Box<ErrorEnvelope>> {
+    let value = serde_json::to_value(extensions).map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Component metadata could not be screened",
+        )
+    })?;
+    let blocked = unsafe_value_paths(&value);
+    let filtered = filtered_value(&value, &FieldPath::root(), &blocked)
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    serde_json::from_value(filtered).map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Screened component metadata is invalid",
+        )
+    })
+}
+
+fn safe_field_name(key: &str) -> String {
+    let safe = RedactionPolicy::with_max_bytes(128)
+        .redact_text(key)
+        .filter(|redacted| redacted == key && !redacted.is_empty());
+    let Some(safe) = safe else {
+        return "<redacted-field>".to_owned();
+    };
+    if safe.len() <= 128
+        && safe
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        safe
+    } else {
+        format!("<field:{}>", &blake3::hash(safe.as_bytes()).to_hex()[..12])
+    }
+}
+
+fn insert_secret_finding(
+    findings: &mut BTreeSet<(String, String, String)>,
+    component: &Component,
+    artifact_path: &str,
+    path: &FieldPath,
+) {
+    findings.insert((
+        safe_finding_text(&component.display_name, 256, "Selected component"),
+        safe_finding_text(artifact_path, 512, "selected artifact"),
+        path.label(),
+    ));
+}
+
+fn safe_finding_text(value: &str, max_bytes: usize, fallback: &str) -> String {
+    RedactionPolicy::with_max_bytes(max_bytes)
+        .redact_text(value)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn set_artifact_inclusion(selection: &mut SelectionInput, artifact: &ArtifactId, include: bool) {
+    if let Some(existing) = selection
+        .artifacts
+        .iter_mut()
+        .find(|item| item.artifact == *artifact)
+    {
+        existing.include = include;
+    } else {
+        selection.artifacts.push(ArtifactSelection {
+            artifact: artifact.clone(),
+            include,
+        });
+    }
+}
+fn require_vault_free_selection(selection: &SelectionInput) -> Result<(), Box<ErrorEnvelope>> {
+    if selection.policy.secrets == SecretSelectionPolicy::VaultExplicit {
+        return Err(boxed_error(
+            ReforgeErrorCode::VaultRequired,
+            "The CLI cannot include secret content without an encrypted vault",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_component_metadata_safe(component: &Component) -> Result<(), Box<ErrorEnvelope>> {
+    let value = serde_json::to_value(component).map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Component metadata could not be screened",
+        )
+    })?;
+    if unsafe_value_paths(&value).is_empty() {
+        Ok(())
+    } else {
+        Err(boxed_error(
+            ReforgeErrorCode::SecurityPolicy,
+            "Selected component metadata contains unsafe values",
+        ))
+    }
+}
+
+struct IngestionTemp {
+    path: PathBuf,
+}
+
+impl Drop for IngestionTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct CancellationWriter<'a, W> {
+    inner: W,
+    cancellation: &'a CancellationToken,
+}
+
+impl<W: Write> Write for CancellationWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        self.inner.flush()
+    }
+}
+
+fn store_bounded_artifact(
+    store: &ObjectStore,
+    known_folders: &KnownFolderMap,
+    artifact: &reforge_domain::ArtifactRef,
+    state_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<reforge_package::StoredFile, Box<ErrorEnvelope>> {
+    let root = known_folders
+        .entries
+        .get(&artifact.source_path.root)
+        .ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::PathNotFound,
+                "The selected artifact root is unavailable",
+            )
+        })?;
+    let safe_path = SafePath::new(artifact.source_path.relative.clone())?;
+    let mut source = BoundedFileReader::open(root, &safe_path, artifact.size_bytes)?;
+
+    let staging = state_root.join("ingest");
+    fs::create_dir_all(&staging).map_err(|error| {
+        Box::new(ErrorEnvelope::from_io_error(
+            &error,
+            "Create bounded ingestion directory",
+        ))
+    })?;
+    let metadata = fs::symlink_metadata(&staging).map_err(|error| {
+        Box::new(ErrorEnvelope::from_io_error(
+            &error,
+            "Inspect bounded ingestion directory",
+        ))
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(boxed_error(
+            ReforgeErrorCode::ReparsePoint,
+            "Bounded ingestion directory is not safe",
+        ));
+    }
+    let temp = IngestionTemp {
+        path: staging.join(format!("{}.tmp", Uuid::now_v7())),
+    };
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&temp.path)
+        .map_err(|error| {
+            Box::new(ErrorEnvelope::from_io_error(
+                &error,
+                "Create bounded ingestion file",
+            ))
+        })?;
+    let streamed = {
+        let mut sink = CancellationWriter {
+            inner: &mut file,
+            cancellation,
+        };
+        source.stream_into(&mut sink)
+    };
+    ensure_not_cancelled(cancellation)?;
+    streamed?;
+    file.seek(SeekFrom::Start(0)).map_err(|error| {
+        Box::new(ErrorEnvelope::from_io_error(
+            &error,
+            "Rewind bounded ingestion file",
+        ))
+    })?;
+    let stored = store.store_file(&mut file, artifact.content_type.clone(), 0)?;
+    ensure_not_cancelled(cancellation)?;
+    Ok(stored)
+}
+
 fn build_package_inputs(
     inventory: &Inventory,
     selection: SelectionInput,
     known_folders: &KnownFolderMap,
     state: &StatePaths,
+    cancellation: &CancellationToken,
 ) -> Result<
     (
         PackageManifest,
@@ -1275,20 +2590,47 @@ fn build_package_inputs(
     ),
     Box<ErrorEnvelope>,
 > {
+    let review = review_selection(inventory, selection, known_folders)?;
+    let mut selection = review.selection;
     let closure = build_selection_closure(&inventory.graph, &selection)?;
     let selected_components: BTreeSet<_> = closure.selected_components.iter().cloned().collect();
     let selected_artifacts: BTreeSet<_> = closure.selected_artifacts.iter().cloned().collect();
+    selection
+        .artifacts
+        .retain(|decision| selected_artifacts.contains(&decision.artifact));
     let store = ObjectStore::open(state.root.join("objects"))?;
-    let mut graph = inventory.graph.clone();
+    let mut graph = PackageGraph {
+        components: inventory
+            .graph
+            .components
+            .iter()
+            .filter(|component| selected_components.contains(&component.id))
+            .cloned()
+            .collect(),
+        edges: inventory
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                selected_components.contains(&edge.from) && selected_components.contains(&edge.to)
+            })
+            .cloned()
+            .collect(),
+    };
     let mut objects = BTreeMap::<reforge_domain::ObjectId, ObjectEntry>::new();
     let mut actual_bytes = 0u64;
+    ensure_not_cancelled(cancellation)?;
     for component in &mut graph.components {
-        let component_selected = selected_components.contains(&component.id);
+        component.dependencies.retain(|edge| {
+            selected_components.contains(&edge.from) && selected_components.contains(&edge.to)
+        });
+        component
+            .artifacts
+            .retain(|artifact| selected_artifacts.contains(&artifact.id));
+        component.extensions = sanitize_extensions(&component.extensions)?;
+        let adapter_safe_config = component.extensions.get("safe_config").cloned();
+        ensure_not_cancelled(cancellation)?;
         for artifact in &mut component.artifacts {
-            if !component_selected || !selected_artifacts.contains(&artifact.id) {
-                artifact.object = None;
-                continue;
-            }
             if artifact.policy == ArtifactPolicy::SecretReference
                 || component.kind == ComponentKind::SecretReference
             {
@@ -1297,26 +2639,33 @@ fn build_package_inputs(
                     "Selected secret content requires an encrypted vault",
                 ));
             }
-            let path = known_folders.resolve(&artifact.source_path)?;
-            let metadata = fs::symlink_metadata(&path).map_err(|error| {
-                Box::new(ErrorEnvelope::from_io_error(
-                    &error,
-                    "Read selected artifact",
-                ))
-            })?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                return Err(boxed_error(
-                    ReforgeErrorCode::ManualActionRequired,
-                    "Selected artifact is not a regular file",
-                ));
-            }
-            let file = File::open(&path).map_err(|error| {
-                Box::new(ErrorEnvelope::from_io_error(
-                    &error,
-                    "Open selected artifact",
-                ))
-            })?;
-            let stored = store.store_file(file, artifact.content_type.clone(), 0)?;
+
+            let stored = if is_screened_content_type(&artifact.content_type) {
+                let screening = scan_secret_like_artifact(
+                    known_folders,
+                    adapter_safe_config.as_ref(),
+                    artifact,
+                )?;
+                let bytes = screening.bytes.ok_or_else(|| {
+                    boxed_error(
+                        ReforgeErrorCode::SecurityPolicy,
+                        "Selected artifact could not be made safe for packaging",
+                    )
+                })?;
+                if let Some(safe_config) = screening.safe_config {
+                    component
+                        .extensions
+                        .insert("safe_config".to_owned(), safe_config);
+                }
+                // The JSONC sanitizer emits ordinary JSON. Identical JSON/JSONC
+                // bytes must have one content type in the content-addressed store.
+                if artifact.content_type == ContentType::Jsonc {
+                    artifact.content_type = ContentType::Json;
+                }
+                store.store_file(Cursor::new(bytes), artifact.content_type.clone(), 0)?
+            } else {
+                store_bounded_artifact(&store, known_folders, artifact, &state.root, cancellation)?
+            };
             actual_bytes = actual_bytes
                 .checked_add(stored.manifest.size_bytes)
                 .ok_or_else(|| {
@@ -1325,6 +2674,7 @@ fn build_package_inputs(
                         "Selected artifact size overflow",
                     )
                 })?;
+            ensure_not_cancelled(cancellation)?;
             artifact.size_bytes = stored.manifest.size_bytes;
             artifact.object = Some(stored.manifest_object.entry.id.clone());
             objects.insert(
@@ -1335,6 +2685,7 @@ fn build_package_inputs(
                 objects.insert(chunk.entry.id.clone(), chunk.entry);
             }
         }
+        ensure_component_metadata_safe(component)?;
     }
     if let Some(max_bytes) = selection.policy.max_bytes
         && actual_bytes > max_bytes
@@ -1374,18 +2725,35 @@ fn build_package_inputs(
         required_os: Some("Windows".to_owned()),
         required_architecture: Some(source_host.architecture.clone()),
         component_ids,
-        warnings: merge_warnings(&inventory.warnings, &closure.warnings),
+        warnings: safe_package_warnings(&inventory.warnings, &closure.warnings),
         object_index_digest: PackageWriter::object_index_digest(&object_index)?,
     };
+    let manifest_value = serde_json::to_value(&manifest).map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::SchemaInvalid,
+            "Package manifest could not be screened",
+        )
+    })?;
+    if !unsafe_value_paths(&manifest_value).is_empty() {
+        return Err(boxed_error(
+            ReforgeErrorCode::SecurityPolicy,
+            "Package manifest contains unsafe metadata",
+        ));
+    }
     Ok((manifest, graph, selection, object_index, store))
 }
 
 fn default_selection(graph: &PackageGraph) -> SelectionInput {
+    let recommendations = reforge_discovery::recommend(graph)
+        .into_iter()
+        .map(|recommendation| (recommendation.component, recommendation.recommended))
+        .collect::<BTreeMap<_, _>>();
     let mut components: Vec<_> = graph
         .components
         .iter()
         .filter(|component| {
-            component.selection.selected_by_default
+            let recommended = recommendations.get(&component.id).copied().unwrap_or(false);
+            (component.selection.selected_by_default || recommended)
                 && !component.selection.sensitive
                 && component.kind != ComponentKind::SecretReference
         })
@@ -1529,6 +2897,13 @@ fn default_registry() -> Result<AdapterRegistry, Box<ErrorEnvelope>> {
             Arc::new(HarnessRegistryAdapter::new(kind)),
         )?;
     }
+    registry.register(ScanPhase::AppAdapters, Arc::new(AgentCatalogAdapter::new()))?;
+    for kind in AgentRuntimeKind::ALL {
+        registry.register(
+            ScanPhase::AppAdapters,
+            Arc::new(AgentRuntimeAdapter::new(kind)),
+        )?;
+    }
     registry.register(ScanPhase::RuntimeProbes, Arc::new(WslAdapter::new()))?;
     registry.register(ScanPhase::RuntimeProbes, Arc::new(DockerAdapter::new()))?;
     registry.register(
@@ -1596,6 +2971,209 @@ fn state_paths() -> Result<StatePaths, Box<ErrorEnvelope>> {
         journal: root.join("journal.sqlite"),
         root,
     })
+}
+fn ensure_not_cancelled(cancellation: &CancellationToken) -> Result<(), Box<ErrorEnvelope>> {
+    if cancellation.is_cancelled() {
+        Err(boxed_error(
+            ReforgeErrorCode::Cancelled,
+            "Package creation was cancelled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn prepare_package_output(path: &Path) -> Result<PathBuf, Box<ErrorEnvelope>> {
+    let output = output_file_path(path)?;
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| boxed_error(ReforgeErrorCode::InvalidPath, "Output path has no parent"))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        Box::new(ErrorEnvelope::from_io_error(
+            &error,
+            "Create package output directory",
+        ))
+    })?;
+    let metadata = fs::symlink_metadata(parent).map_err(|error| {
+        Box::new(ErrorEnvelope::from_io_error(
+            &error,
+            "Inspect package output directory",
+        ))
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(boxed_error(
+            ReforgeErrorCode::ReparsePoint,
+            "Package output directory is not a safe directory",
+        ));
+    }
+    if output.exists() {
+        return Err(boxed_error(
+            ReforgeErrorCode::TargetConflict,
+            "Package output already exists",
+        ));
+    }
+    Ok(output)
+}
+
+fn ensure_package_storage_available(
+    facts: &HostFacts,
+    state_root: &Path,
+    output: &Path,
+    selected_bytes: u64,
+) -> Result<(), Box<ErrorEnvelope>> {
+    let state_required = recommended_free_bytes(selected_bytes).ok_or_else(|| {
+        boxed_error(
+            ReforgeErrorCode::InsufficientDisk,
+            "Package storage requirement overflow",
+        )
+    })?;
+    let output_required = selected_bytes
+        .checked_add(PACKAGE_STORAGE_MARGIN_BYTES)
+        .ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::InsufficientDisk,
+                "Package output requirement overflow",
+            )
+        })?;
+    let same_volume = path_drive_token(state_root)
+        .zip(path_drive_token(output))
+        .is_some_and(|(state, output)| state.eq_ignore_ascii_case(&output));
+    if same_volume {
+        let combined = state_required.checked_add(output_required).ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::InsufficientDisk,
+                "Combined package storage requirement overflow",
+            )
+        })?;
+        ensure_volume_free_space(facts, output, combined, "package staging and output")
+    } else {
+        ensure_volume_free_space(facts, state_root, state_required, "state storage")?;
+        ensure_volume_free_space(facts, output, output_required, "package output")
+    }
+}
+
+fn ensure_package_output_available(
+    facts: &HostFacts,
+    output: &Path,
+    object_index: &ObjectIndex,
+) -> Result<(), Box<ErrorEnvelope>> {
+    let object_bytes = object_index.objects.iter().try_fold(0u64, |total, entry| {
+        total.checked_add(entry.compressed_bytes).ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::InsufficientDisk,
+                "Package output requirement overflow",
+            )
+        })
+    })?;
+    let required = object_bytes
+        .checked_add(PACKAGE_STORAGE_MARGIN_BYTES)
+        .ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::InsufficientDisk,
+                "Package output requirement overflow",
+            )
+        })?;
+    ensure_volume_free_space(facts, output, required, "package output")
+}
+
+fn ensure_volume_free_space(
+    facts: &HostFacts,
+    path: &Path,
+    required: u64,
+    label: &str,
+) -> Result<(), Box<ErrorEnvelope>> {
+    let token = path_drive_token(path).ok_or_else(|| {
+        boxed_error(
+            ReforgeErrorCode::SourceUnavailable,
+            format!("Free-space information for {label} is unavailable"),
+        )
+    })?;
+    let available = facts
+        .free_bytes
+        .iter()
+        .find(|space| space.token.eq_ignore_ascii_case(&token))
+        .map(|space| space.bytes)
+        .ok_or_else(|| {
+            boxed_error(
+                ReforgeErrorCode::SourceUnavailable,
+                format!("Free-space information for {label} is unavailable"),
+            )
+        })?;
+    if available < required {
+        return Err(boxed_error(
+            ReforgeErrorCode::InsufficientDisk,
+            format!("Insufficient disk space for {label}"),
+        ));
+    }
+    Ok(())
+}
+
+fn path_drive_token(path: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    absolute.components().find_map(|component| match component {
+        PathComponent::Prefix(prefix) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                Some(format!("{}:", char::from(letter).to_ascii_uppercase()))
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn write_package_with_cancel(
+    destination: &Path,
+    request: PackageWriteRequest<'_>,
+    store: &ObjectStore,
+    cancellation: &CancellationToken,
+) -> Result<TransportReceipt, Box<ErrorEnvelope>> {
+    ensure_not_cancelled(cancellation)?;
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| boxed_error(ReforgeErrorCode::InvalidPath, "Output path has no parent"))?;
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| boxed_error(ReforgeErrorCode::InvalidPath, "Output filename is invalid"))?;
+    let stage_name = format!(".{file_name}.{}.partial", Uuid::now_v7());
+    let staged = parent.join(&stage_name);
+    let writer = PackageWriter::default();
+    let receipt = writer.write(&staged, request, store).inspect_err(|_| {
+        let _ = fs::remove_file(&staged);
+    })?;
+    if cancellation.is_cancelled() {
+        let _ = fs::remove_file(&staged);
+        return Err(boxed_error(
+            ReforgeErrorCode::Cancelled,
+            "Package creation was cancelled",
+        ));
+    }
+    reforge_platform_windows::publish_new_file(&staged, destination).inspect_err(|_| {
+        let _ = fs::remove_file(&staged);
+    })?;
+    Ok(receipt)
+}
+
+pub(crate) fn default_backup_directory() -> Result<PathBuf, Box<ErrorEnvelope>> {
+    let folders = KnownFolderMap::current_user()?;
+    let token = PathToken::new(KnownFolderToken::Documents, "Reforge Backups").map_err(|_| {
+        boxed_error(
+            ReforgeErrorCode::InvalidPath,
+            "The default backup directory token is invalid",
+        )
+    })?;
+    folders.resolve(&token)
+}
+
+pub(crate) fn default_backup_path() -> Result<PathBuf, Box<ErrorEnvelope>> {
+    let filename = format!("Reforge-{}.reforge", Utc::now().format("%Y-%m-%d-%H%M%S"));
+    Ok(default_backup_directory()?.join(filename))
 }
 
 fn write_json_state<T: Serialize>(path: &Path, value: &T) -> Result<(), Box<ErrorEnvelope>> {
@@ -1786,6 +3364,16 @@ fn merge_warnings(first: &[String], second: &[String]) -> Vec<String> {
     warnings.dedup();
     warnings
 }
+fn safe_package_warnings(first: &[String], second: &[String]) -> Vec<String> {
+    merge_warnings(first, second)
+        .into_iter()
+        .filter(|warning| {
+            RedactionPolicy::default()
+                .redact_text(warning)
+                .is_some_and(|screened| screened == *warning)
+        })
+        .collect()
+}
 
 fn new_run_id() -> Result<RunId, Box<ErrorEnvelope>> {
     RunId::new(Uuid::now_v7()).map_err(|_| {
@@ -1883,657 +3471,4 @@ fn emit_error(error: &ErrorEnvelope, json_output: bool, exit_code: i32) -> ! {
     }
     let _ = std::io::stdout().flush();
     process::exit(exit_code);
-}
-mod interactive {
-    use std::{
-        collections::BTreeSet,
-        io::{self, BufRead, Write},
-        path::PathBuf,
-    };
-
-    use reforge_domain::{
-        Component, ComponentId, ComponentKind, Inventory, LargeDataSelectionPolicy, RunId,
-        SecretSelectionPolicy, SelectionInput, SelectionPolicy, UnknownBinarySelectionPolicy,
-    };
-    use serde_json::{Value, json};
-
-    use super::{
-        ApplicationService, CommandResult, ErrorEnvelope, ModeArg, action_acknowledge_command,
-        action_list_command, doctor_command, package_inspect_command, parse_run_id, plan_command,
-        read_json_state, report_command, restore_command, resume_command, scan_command,
-        state_paths, target_scan_command, verify_command,
-    };
-
-    const PAGE_SIZE: usize = 20;
-
-    pub(super) async fn run() -> Result<CommandResult, Box<ErrorEnvelope>> {
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut ui = InteractiveUi::new(stdin.lock(), stdout.lock());
-        ui.run().await?;
-        Ok(CommandResult {
-            payload: json!({"status": "exited"}),
-            human: String::new(),
-            exit_code: 0,
-        })
-    }
-
-    struct InteractiveUi<R, W> {
-        input: R,
-        output: W,
-        package_path: Option<PathBuf>,
-        run_id: Option<RunId>,
-    }
-
-    impl<R, W> InteractiveUi<R, W>
-    where
-        R: BufRead,
-        W: Write,
-    {
-        fn new(input: R, output: W) -> Self {
-            Self {
-                input,
-                output,
-                package_path: None,
-                run_id: None,
-            }
-        }
-
-        async fn run(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            self.write_line("Reforge — интерактивный режим командной строки.")?;
-            self.write_line(
-                "Все операции используют те же проверки, что и обычные команды; restore требует точного YES.",
-            )?;
-            loop {
-                self.write_menu()?;
-                let Some(choice) = self.prompt("Выберите пункт: ")? else {
-                    self.write_line("Ввод завершён.")?;
-                    break;
-                };
-                match choice.as_str() {
-                    "0" => {
-                        self.write_line("Выход.")?;
-                        break;
-                    }
-                    "1" => self.show_result(doctor_command())?,
-                    "2" => self.scan().await?,
-                    "3" => self.show_inventory()?,
-                    "4" => self.show_result(target_scan_command().await)?,
-                    "5" => self.create_package()?,
-                    "6" => self.inspect_package()?,
-                    "7" => self.plan().await?,
-                    "8" => self.restore().await?,
-                    "9" => self.resume().await?,
-                    "10" => self.manual_actions()?,
-                    "11" => self.verify().await?,
-                    "12" => self.report().await?,
-                    _ => self.write_line("Неизвестный пункт. Введите число из меню.")?,
-                }
-            }
-            Ok(())
-        }
-
-        fn write_menu(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            self.write_line("")?;
-            self.write_line("=== Reforge ===")?;
-            self.write_line(" 1. Проверить host (doctor)")?;
-            self.write_line(" 2. Сканировать окружение")?;
-            self.write_line(" 3. Показать найденные компоненты")?;
-            self.write_line(" 4. Сканировать target")?;
-            self.write_line(" 5. Создать пакет")?;
-            self.write_line(" 6. Проверить пакет")?;
-            self.write_line(" 7. Построить план восстановления")?;
-            self.write_line(" 8. Выполнить восстановление")?;
-            self.write_line(" 9. Продолжить interrupted/reboot run")?;
-            self.write_line("10. Manual actions")?;
-            self.write_line("11. Проверить результат")?;
-            self.write_line("12. Показать/сохранить отчёт")?;
-            self.write_line(" 0. Выход")?;
-            Ok(())
-        }
-
-        async fn scan(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            self.show_result(scan_command().await)
-        }
-
-        fn show_inventory(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let inventory = match load_inventory() {
-                Ok(inventory) => inventory,
-                Err(error) => {
-                    self.show_error(&error)?;
-                    return Ok(());
-                }
-            };
-            self.write_line(&format!(
-                "Inventory: {} компонентов, {} предупреждений.",
-                inventory.graph.components.len(),
-                inventory.warnings.len()
-            ))?;
-            self.browse_components(&inventory)
-        }
-
-        fn create_package(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let inventory = match load_inventory() {
-                Ok(inventory) => inventory,
-                Err(error) => {
-                    self.show_error(&error)?;
-                    return Ok(());
-                }
-            };
-            let Some(component_ids) = self.choose_components(&inventory)? else {
-                return Ok(());
-            };
-            let Some(output) = self.prompt_path("Путь выходного .reforge файла (q — отмена): ")?
-            else {
-                return Ok(());
-            };
-            let service = match ApplicationService::new() {
-                Ok(service) => service,
-                Err(error) => {
-                    self.show_error(&error)?;
-                    return Ok(());
-                }
-            };
-            let selection = SelectionInput {
-                components: component_ids.clone(),
-                artifacts: Vec::new(),
-                policy: SelectionPolicy {
-                    secrets: SecretSelectionPolicy::Exclude,
-                    large_data: LargeDataSelectionPolicy::Exclude,
-                    unknown_binaries: UnknownBinarySelectionPolicy::Exclude,
-                    max_bytes: None,
-                },
-            };
-            match service.create_package(&output, selection) {
-                Ok(receipt) => {
-                    self.package_path = Some(output);
-                    self.show_result(Ok(CommandResult {
-                        payload: json!({
-                            "status": "ok",
-                            "package_id": receipt.package_id,
-                            "object_count": receipt.object_count,
-                            "index_digest": receipt.index_digest,
-                        }),
-                        human: format!(
-                            "Пакет создан: {} (выбрано компонентов: {}, объектов: {}).\n",
-                            receipt.package_id,
-                            component_ids.len(),
-                            receipt.object_count
-                        ),
-                        exit_code: 0,
-                    }))
-                }
-                Err(error) => {
-                    self.show_error(&error)?;
-                    Ok(())
-                }
-            }
-        }
-
-        fn inspect_package(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(path) = self.prompt_package_path()? else {
-                return Ok(());
-            };
-            self.show_result(package_inspect_command(path))
-        }
-
-        async fn plan(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(path) = self.prompt_package_path()? else {
-                return Ok(());
-            };
-            let Some(mode) = self.prompt_mode()? else {
-                return Ok(());
-            };
-            self.show_result(plan_command(path, mode).await)
-        }
-
-        async fn restore(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(path) = self.prompt_package_path()? else {
-                return Ok(());
-            };
-            let Some(mode) = self.prompt_mode()? else {
-                return Ok(());
-            };
-            self.write_line(
-                "Восстановление может изменять target; сначала выполните пункт 7 и проверьте план.",
-            )?;
-            let Some(confirmation) = self.prompt("Для продолжения введите YES: ")?
-            else {
-                return Ok(());
-            };
-            if confirmation != "YES" {
-                self.write_line("Восстановление отменено.")?;
-                return Ok(());
-            }
-            self.show_result(restore_command(path, mode, true).await)
-        }
-
-        async fn resume(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(run_id) = self.prompt_run_id()? else {
-                return Ok(());
-            };
-            self.show_result(resume_command(run_id).await)
-        }
-
-        fn manual_actions(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            loop {
-                self.write_line("")?;
-                self.write_line("Manual actions:")?;
-                self.write_line(" 1. Показать очередь")?;
-                self.write_line(" 2. Acknowledge action")?;
-                self.write_line(" 0. Назад")?;
-                let Some(choice) = self.prompt("Выберите пункт: ")? else {
-                    return Ok(());
-                };
-                match choice.as_str() {
-                    "0" => return Ok(()),
-                    "1" => {
-                        let Some(run_id) = self.prompt_run_id()? else {
-                            continue;
-                        };
-                        self.show_result(action_list_command(run_id))?;
-                    }
-                    "2" => {
-                        let Some(run_id) = self.prompt_run_id()? else {
-                            continue;
-                        };
-                        let Some(action_id) =
-                            self.prompt_required("Введите action_id (q — назад): ")?
-                        else {
-                            continue;
-                        };
-                        self.show_result(action_acknowledge_command(run_id, action_id))?;
-                    }
-                    _ => self.write_line("Неизвестный пункт.")?,
-                }
-            }
-        }
-
-        async fn verify(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(run_id) = self.prompt_run_id()? else {
-                return Ok(());
-            };
-            self.show_result(verify_command(run_id).await)
-        }
-
-        async fn report(&mut self) -> Result<(), Box<ErrorEnvelope>> {
-            let Some(run_id) = self.prompt_run_id()? else {
-                return Ok(());
-            };
-            let output = match self
-                .prompt("Путь для сохранения отчёта (Enter — только показать, q — назад): ")?
-            {
-                None => return Ok(()),
-                Some(line) if line == "q" => return Ok(()),
-                Some(line) if line.is_empty() => None,
-                Some(line) => Some(PathBuf::from(line)),
-            };
-            self.show_result(report_command(run_id, output).await)
-        }
-
-        fn prompt_mode(&mut self) -> Result<Option<ModeArg>, Box<ErrorEnvelope>> {
-            let Some(choice) = self.prompt("Режим: 1 — rebuild, 2 — migrate, 0 — назад: ")?
-            else {
-                return Ok(None);
-            };
-            match choice.as_str() {
-                "1" => Ok(Some(ModeArg::Rebuild)),
-                "2" => Ok(Some(ModeArg::Migrate)),
-                _ => {
-                    self.write_line("Режим не выбран.")?;
-                    Ok(None)
-                }
-            }
-        }
-
-        fn prompt_package_path(&mut self) -> Result<Option<PathBuf>, Box<ErrorEnvelope>> {
-            let prompt = if self.package_path.is_some() {
-                "Путь пакета (Enter — использовать ранее выбранный, q — назад): "
-            } else {
-                "Путь .reforge пакета (q — назад): "
-            };
-            let Some(line) = self.prompt(prompt)? else {
-                return Ok(None);
-            };
-            if line == "q" {
-                return Ok(None);
-            }
-            if line.is_empty() {
-                return Ok(self.package_path.clone());
-            }
-            let path = PathBuf::from(line);
-            self.package_path = Some(path.clone());
-            Ok(Some(path))
-        }
-
-        fn prompt_path(&mut self, message: &str) -> Result<Option<PathBuf>, Box<ErrorEnvelope>> {
-            let Some(line) = self.prompt(message)? else {
-                return Ok(None);
-            };
-            if line.is_empty() || line == "q" {
-                return Ok(None);
-            }
-            Ok(Some(PathBuf::from(line)))
-        }
-
-        fn prompt_required(&mut self, message: &str) -> Result<Option<String>, Box<ErrorEnvelope>> {
-            let Some(line) = self.prompt(message)? else {
-                return Ok(None);
-            };
-            if line.is_empty() || line == "q" {
-                return Ok(None);
-            }
-            Ok(Some(line))
-        }
-
-        fn prompt_run_id(&mut self) -> Result<Option<RunId>, Box<ErrorEnvelope>> {
-            let message = if self.run_id.is_some() {
-                "Run ID (Enter — последний сохранённый, q — назад): "
-            } else {
-                "Run ID (q — назад): "
-            };
-            let Some(line) = self.prompt(message)? else {
-                return Ok(None);
-            };
-            if line == "q" {
-                return Ok(None);
-            }
-            if line.is_empty() {
-                return Ok(self.run_id.clone());
-            }
-            match parse_run_id(&line) {
-                Ok(run_id) => {
-                    self.run_id = Some(run_id.clone());
-                    Ok(Some(run_id))
-                }
-                Err(message) => {
-                    self.write_line(&format!("Некорректный run ID: {message}"))?;
-                    Ok(None)
-                }
-            }
-        }
-
-        fn choose_components(
-            &mut self,
-            inventory: &Inventory,
-        ) -> Result<Option<Vec<ComponentId>>, Box<ErrorEnvelope>> {
-            let candidates = selectable_components(inventory);
-            if candidates.is_empty() {
-                self.write_line("Нет компонентов, доступных для безопасного выбора.")?;
-                return Ok(None);
-            }
-            self.write_line(
-                "Выберите номера компонентов. Можно переходить по страницам; done — завершить, q — отмена.",
-            )?;
-            let mut selected = Vec::new();
-            let mut page = 0usize;
-            loop {
-                self.write_component_page(&candidates, page, &selected)?;
-                let Some(answer) = self.prompt("Номера через запятую / n / p / done: ")?
-                else {
-                    return Ok(None);
-                };
-                match answer.to_ascii_lowercase().as_str() {
-                    "q" => return Ok(None),
-                    "done" => {
-                        if selected.is_empty() {
-                            self.write_line("Нужно выбрать хотя бы один компонент.")?;
-                        } else {
-                            return Ok(Some(selected));
-                        }
-                    }
-                    "n" => {
-                        if page + 1 < page_count(candidates.len()) {
-                            page += 1;
-                        }
-                    }
-                    "p" => page = page.saturating_sub(1),
-                    _ => match parse_number_list(&answer, candidates.len()) {
-                        Ok(indices) => {
-                            for index in indices {
-                                let id = candidates[index].id.clone();
-                                if !selected.contains(&id) {
-                                    selected.push(id);
-                                }
-                            }
-                            self.write_line(&format!("Выбрано компонентов: {}.", selected.len()))?;
-                        }
-                        Err(message) => self.write_line(&message)?,
-                    },
-                }
-            }
-        }
-
-        fn browse_components(&mut self, inventory: &Inventory) -> Result<(), Box<ErrorEnvelope>> {
-            let candidates = selectable_components(inventory);
-            if candidates.is_empty() {
-                self.write_line("Нет компонентов, доступных для отображения.")?;
-                return Ok(());
-            }
-            let mut page = 0usize;
-            loop {
-                self.write_component_page(&candidates, page, &[])?;
-                let Some(answer) = self.prompt("n — следующая, p — предыдущая, q — назад: ")?
-                else {
-                    return Ok(());
-                };
-                match answer.to_ascii_lowercase().as_str() {
-                    "q" | "" => return Ok(()),
-                    "n" if page + 1 < page_count(candidates.len()) => page += 1,
-                    "p" => page = page.saturating_sub(1),
-                    _ => self.write_line("Команда не распознана.")?,
-                }
-            }
-        }
-
-        fn write_component_page(
-            &mut self,
-            candidates: &[&Component],
-            page: usize,
-            selected: &[ComponentId],
-        ) -> Result<(), Box<ErrorEnvelope>> {
-            let start = page * PAGE_SIZE;
-            let end = (start + PAGE_SIZE).min(candidates.len());
-            self.write_line(&format!(
-                "Компоненты {}–{} из {} (страница {}/{}):",
-                start + 1,
-                end,
-                candidates.len(),
-                page + 1,
-                page_count(candidates.len())
-            ))?;
-            for (index, component) in candidates[start..end].iter().enumerate() {
-                let global = start + index + 1;
-                let marker = if selected.contains(&component.id) {
-                    "*"
-                } else {
-                    " "
-                };
-                self.write_line(&format!(
-                    "[{marker}] {global:>4}. {} ({:?})",
-                    safe_component_name(component),
-                    component.kind
-                ))?;
-            }
-            Ok(())
-        }
-
-        fn show_result(
-            &mut self,
-            result: Result<CommandResult, Box<ErrorEnvelope>>,
-        ) -> Result<(), Box<ErrorEnvelope>> {
-            match result {
-                Ok(result) => {
-                    self.remember_payload(&result.payload);
-                    if !result.human.is_empty() {
-                        self.write_raw(&result.human)?;
-                        if !result.human.ends_with('\n') {
-                            self.write_line("")?;
-                        }
-                    }
-                    self.write_line(&format!("Код завершения: {}", result.exit_code))?;
-                }
-                Err(error) => self.show_error(&error)?,
-            }
-            Ok(())
-        }
-
-        fn show_error(&mut self, error: &ErrorEnvelope) -> Result<(), Box<ErrorEnvelope>> {
-            self.write_line(&format!("Ошибка [{:?}]: {}", error.code, error.message))
-        }
-
-        fn remember_payload(&mut self, payload: &Value) {
-            let run_id = payload.get("run_id").and_then(Value::as_str).or_else(|| {
-                payload
-                    .get("plan")
-                    .and_then(|plan| plan.get("run_id"))
-                    .and_then(Value::as_str)
-            });
-            if let Some(run_id) = run_id
-                && let Ok(run_id) = parse_run_id(run_id)
-            {
-                self.run_id = Some(run_id);
-            }
-        }
-
-        fn prompt(&mut self, message: &str) -> Result<Option<String>, Box<ErrorEnvelope>> {
-            self.output
-                .write_all(message.as_bytes())
-                .map_err(|error| io_error(error, "Write interactive prompt"))?;
-            self.output
-                .flush()
-                .map_err(|error| io_error(error, "Flush interactive prompt"))?;
-            let mut line = String::new();
-            let read = self
-                .input
-                .read_line(&mut line)
-                .map_err(|error| io_error(error, "Read interactive input"))?;
-            if read == 0 {
-                return Ok(None);
-            }
-            Ok(Some(line.trim().to_owned()))
-        }
-
-        fn write_raw(&mut self, value: &str) -> Result<(), Box<ErrorEnvelope>> {
-            self.output
-                .write_all(value.as_bytes())
-                .map_err(|error| io_error(error, "Write interactive output"))
-        }
-
-        fn write_line(&mut self, value: &str) -> Result<(), Box<ErrorEnvelope>> {
-            writeln!(self.output, "{value}")
-                .map_err(|error| io_error(error, "Write interactive output"))
-        }
-    }
-
-    fn load_inventory() -> Result<Inventory, Box<ErrorEnvelope>> {
-        let state = state_paths()?;
-        read_json_state(&state.inventory)
-    }
-
-    fn selectable_components(inventory: &Inventory) -> Vec<&Component> {
-        let mut components = inventory
-            .graph
-            .components
-            .iter()
-            .filter(|component| {
-                component.kind != ComponentKind::SecretReference && !component.selection.sensitive
-            })
-            .collect::<Vec<_>>();
-        components.sort_by(|left, right| {
-            safe_component_name(left)
-                .cmp(&safe_component_name(right))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        components
-    }
-
-    fn safe_component_name(component: &Component) -> String {
-        let mut name = component
-            .display_name
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(80)
-            .collect::<String>();
-        if name.is_empty() {
-            name.push_str("(без названия)");
-        }
-        name
-    }
-
-    fn page_count(item_count: usize) -> usize {
-        item_count.div_ceil(PAGE_SIZE)
-    }
-
-    fn parse_number_list(input: &str, maximum: usize) -> Result<Vec<usize>, String> {
-        let mut seen = BTreeSet::new();
-        for token in
-            input.split(|character: char| character == ',' || character.is_ascii_whitespace())
-        {
-            if token.is_empty() {
-                continue;
-            }
-            let number = token
-                .parse::<usize>()
-                .map_err(|_| format!("Некорректный номер компонента: {token}"))?;
-            if number == 0 || number > maximum {
-                return Err(format!("Номер компонента должен быть от 1 до {maximum}."));
-            }
-            seen.insert(number - 1);
-        }
-        if seen.is_empty() {
-            return Err("Введите хотя бы один номер компонента.".to_owned());
-        }
-        Ok(seen.into_iter().collect())
-    }
-
-    fn io_error(error: io::Error, context: &str) -> Box<ErrorEnvelope> {
-        Box::new(ErrorEnvelope::from_io_error(&error, context))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::io::Cursor;
-
-        #[test]
-        fn menu_exits_cleanly_on_zero() {
-            let mut ui = InteractiveUi::new(Cursor::new(b"0\n".to_vec()), Vec::<u8>::new());
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime.block_on(ui.run()).expect("interactive menu");
-            let output = String::from_utf8(ui.output).expect("UTF-8 output");
-            assert!(output.contains("1. Проверить host (doctor)"));
-            assert!(output.contains("Выход."));
-        }
-        #[test]
-        fn restore_rejects_non_exact_yes_confirmation() {
-            let mut ui = InteractiveUi::new(
-                Cursor::new(b"unused.reforge\n1\nconfirm\n".to_vec()),
-                Vec::<u8>::new(),
-            );
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime
-                .block_on(ui.restore())
-                .expect("restore confirmation");
-            let output = String::from_utf8(ui.output).expect("UTF-8 output");
-            assert!(output.contains("Восстановление отменено."));
-        }
-
-        #[test]
-        fn numeric_component_selection_is_deduplicated() {
-            assert_eq!(parse_number_list("1, 3 3", 4).expect("numbers"), vec![0, 2]);
-        }
-
-        #[test]
-        fn numeric_component_selection_rejects_out_of_bounds() {
-            let error = parse_number_list("0,2", 4).expect_err("zero must be rejected");
-            assert!(error.contains("от 1 до 4"));
-        }
-    }
 }

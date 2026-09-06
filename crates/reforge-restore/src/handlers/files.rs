@@ -8,9 +8,9 @@ use reforge_platform_windows::{CancellationToken, KnownFolderMap};
 use serde_json::json;
 
 use super::{
-    DEFAULT_MAX_OBJECT_BYTES, atomic_write, io_error, object_entry, operation_error,
-    read_existing_file, read_verified_object, reject_protected_root, resolve_destination,
-    target_attributes, verified_evidence,
+    DEFAULT_MAX_OBJECT_BYTES, atomic_write, io_error, operation_error, read_existing_file,
+    read_verified_artifact, reject_protected_root, resolve_destination, target_attributes,
+    validate_artifact,
 };
 use crate::{
     ExecutionContext, OperationHandler, OperationOutcome, OperationSatisfaction, RestoreResult,
@@ -77,15 +77,12 @@ impl OperationHandler for FileRestoreHandler {
         let OperationKind::WriteFile { object, .. } = &operation.kind else {
             unreachable!("handles restricts file operations");
         };
-        let expected = object_entry(context.object_index, object)?;
+        let expected = validate_artifact(context, object, self.max_object_bytes)?;
         let Some((bytes, _metadata)) = read_existing_file(&destination, self.max_object_bytes)?
         else {
             return Ok(OperationSatisfaction::NotSatisfied);
         };
-        if bytes.len() as u64 != expected.uncompressed_bytes {
-            return Ok(OperationSatisfaction::NotSatisfied);
-        }
-        if reforge_domain::ObjectId::from_content(&bytes) != *object {
+        if !expected.matches_bytes(&bytes) {
             return Ok(OperationSatisfaction::NotSatisfied);
         }
         let digest = *blake3::hash(&bytes).as_bytes();
@@ -94,8 +91,9 @@ impl OperationHandler for FileRestoreHandler {
             "bytes": bytes.len(),
             "blake3": blake3::Hash::from_bytes(digest).to_hex().to_string(),
         })))
-        .with_evidence([verified_evidence(
+        .with_evidence([verified_file_evidence(
             destination.relative.as_str(),
+            object,
             bytes.len() as u64,
             digest,
         )]))
@@ -140,22 +138,23 @@ impl OperationHandler for FileRestoreHandler {
                 "reason": "cancelled before object read",
             }))));
         }
-        let (_entry, bytes) = read_verified_object(context, object, self.max_object_bytes)?;
+        let artifact = read_verified_artifact(context, object, self.max_object_bytes)?;
         let attributes = if matches!(mode, FileMode::PreserveTarget) {
             target_attributes(metadata.as_ref())
         } else {
             Default::default()
         };
-        let replaced = atomic_write(&destination, &bytes, attributes, object)?;
-        let digest = *blake3::hash(&bytes).as_bytes();
+        let replaced = atomic_write(&destination, &artifact, attributes)?;
+        let digest = artifact.digest();
         let mut outcome = OperationOutcome::completed(Some(json!({
             "changed": true,
             "destination": destination.relative.as_str(),
-            "bytes": bytes.len(),
+            "bytes": artifact.bytes().len(),
         })))
-        .with_evidence([verified_evidence(
+        .with_evidence([verified_file_evidence(
             destination.relative.as_str(),
-            bytes.len() as u64,
+            object,
+            artifact.bytes().len() as u64,
             digest,
         )]);
         if let Some(backup) = replaced.backup {
@@ -172,6 +171,20 @@ impl OperationHandler for FileRestoreHandler {
         }
         Ok(outcome)
     }
+}
+
+fn verified_file_evidence(
+    destination: &str,
+    object: &reforge_domain::ObjectId,
+    bytes: u64,
+    digest: [u8; 32],
+) -> serde_json::Value {
+    json!({
+        "destination": destination,
+        "object_id": object.as_str(),
+        "bytes": bytes,
+        "blake3": blake3::Hash::from_bytes(digest).to_hex().to_string(),
+    })
 }
 
 /// Keep the handler object cheap to pass through future registries.

@@ -495,6 +495,25 @@ impl OpenCodeAdapter {
             artifacts: sorted_artifacts(artifacts),
             ..OpenCodeDiscovery::empty()
         };
+        let fallback_harness_config = join_token(&global_root, "opencode.json")?;
+        let harness_verification = if let Some(artifact) =
+            result.artifacts.iter().find(|artifact| {
+                artifact.policy == ArtifactPolicy::Config
+                    && matches!(
+                        &artifact.content_type,
+                        ContentType::Json | ContentType::Jsonc | ContentType::Toml
+                    )
+            }) {
+            vec![VerificationRule::ConfigParses {
+                destination: artifact.source_path.clone(),
+                content_type: artifact.content_type.clone(),
+            }]
+        } else {
+            vec![VerificationRule::ConfigParses {
+                destination: fallback_harness_config,
+                content_type: ContentType::Json,
+            }]
+        };
         let harness_evidence =
             state.evidence(&global_root, "OpenCode configuration roots discovered");
         let harness = build_component(
@@ -504,7 +523,7 @@ impl OpenCodeAdapter {
             Vec::new(),
             &harness_evidence,
             harness_restore(),
-            Vec::new(),
+            harness_verification,
             false,
             json_map([
                 ("adapter", json!(ADAPTER_ID)),

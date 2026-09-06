@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     DEFAULT_MAX_OBJECT_BYTES, content_type_allowed, operation_error, read_existing_file,
-    read_verified_object, reject_protected_root, resolve_destination, target_attributes,
+    read_verified_artifact, reject_protected_root, resolve_destination, target_attributes,
     verified_evidence,
 };
 use crate::{
@@ -120,11 +120,14 @@ impl OperationHandler for ConfigRestoreHandler {
             OperationKind::MergeToml { object, policy, .. } => (object, policy, ConfigKind::Toml),
             _ => unreachable!("handles restricts config operations"),
         };
-        let (entry, source_bytes) = read_verified_object(context, object, self.max_object_bytes)?;
+        let source = read_verified_artifact(context, object, self.max_object_bytes)?;
         match kind {
             ConfigKind::Json => {
-                content_type_allowed(&entry, [ContentType::Json, ContentType::Jsonc])?;
-                let source = parse_json_config(&source_bytes, "package JSON configuration")?;
+                content_type_allowed(
+                    source.content_type(),
+                    [ContentType::Json, ContentType::Jsonc],
+                )?;
+                let source = parse_json_config(source.bytes(), "package JSON configuration")?;
                 let target = existing
                     .as_ref()
                     .map(|(bytes, _)| parse_json_config(bytes, "target JSON configuration"))
@@ -159,8 +162,8 @@ impl OperationHandler for ConfigRestoreHandler {
                 )
             }
             ConfigKind::Toml => {
-                content_type_allowed(&entry, [ContentType::Toml])?;
-                let source = parse_toml_config(&source_bytes, "package TOML configuration")?;
+                content_type_allowed(source.content_type(), [ContentType::Toml])?;
+                let source = parse_toml_config(source.bytes(), "package TOML configuration")?;
                 let target = existing
                     .as_ref()
                     .map(|(bytes, _)| parse_toml_config(bytes, "target TOML configuration"))
