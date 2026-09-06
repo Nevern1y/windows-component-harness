@@ -2,11 +2,11 @@
   "$defs": {
     "Architecture": {
       "enum": [
-        "X86",
-        "X64",
         "ARM64",
         "NEUTRAL",
-        "UNKNOWN"
+        "UNKNOWN",
+        "X64",
+        "X86"
       ],
       "type": "string"
     },
@@ -19,10 +19,10 @@
         "CONFIG",
         "DATA",
         "EXPORT",
-        "PORTABLE_BINARY",
         "LARGE_OPT_IN",
-        "SECRET_REFERENCE",
-        "MANUAL"
+        "MANUAL",
+        "PORTABLE_BINARY",
+        "SECRET_REFERENCE"
       ],
       "type": "string"
     },
@@ -61,12 +61,12 @@
         }
       },
       "required": [
+        "content_type",
         "id",
-        "source_path",
+        "policy",
         "scope",
         "size_bytes",
-        "content_type",
-        "policy"
+        "source_path"
       ],
       "type": "object"
     },
@@ -76,44 +76,44 @@
     },
     "ComponentKind": {
       "enum": [
-        "APPLICATION",
-        "PACKAGE",
-        "RUNTIME",
-        "TOOL",
-        "HARNESS",
-        "MCP_SERVER",
-        "SKILL",
         "AGENT",
-        "HOOK",
-        "PLUGIN",
+        "APPLICATION",
         "BROWSER",
         "BROWSER_PROFILE",
-        "EDITOR",
-        "EXTENSION",
         "CONFIGURATION",
         "DATA_ARTIFACT",
-        "SECRET_REFERENCE",
-        "ENVIRONMENT_VARIABLE",
-        "SYSTEM_FEATURE",
-        "SERVICE",
-        "SCHEDULED_TASK",
-        "SHELL",
-        "PORTABLE_BINARY",
-        "WSL_DISTRIBUTION",
         "DOCKER_CONTEXT",
         "DOCKER_IMAGE",
         "DOCKER_VOLUME",
-        "UNKNOWN"
+        "EDITOR",
+        "ENVIRONMENT_VARIABLE",
+        "EXTENSION",
+        "HARNESS",
+        "HOOK",
+        "MCP_SERVER",
+        "PACKAGE",
+        "PLUGIN",
+        "PORTABLE_BINARY",
+        "RUNTIME",
+        "SCHEDULED_TASK",
+        "SECRET_REFERENCE",
+        "SERVICE",
+        "SHELL",
+        "SKILL",
+        "SYSTEM_FEATURE",
+        "TOOL",
+        "UNKNOWN",
+        "WSL_DISTRIBUTION"
       ],
       "type": "string"
     },
     "ConfigScope": {
       "enum": [
+        "MANAGED",
         "PROCESS",
-        "USER",
-        "SYSTEM",
         "PROJECT",
-        "MANAGED"
+        "SYSTEM",
+        "USER"
       ],
       "type": "string"
     },
@@ -152,48 +152,48 @@
       "required": [
         "id",
         "kind",
-        "source_summary",
-        "target_summary",
+        "requires_confirmation",
         "resolution",
-        "requires_confirmation"
+        "source_summary",
+        "target_summary"
       ],
       "type": "object"
     },
     "ConflictKind": {
       "enum": [
         "ALREADY_SATISFIED",
-        "VERSION_DIFFERENCE",
+        "ARCHITECTURE_CONFLICT",
         "CONFIG_DIFFERENCE",
         "DATA_COLLISION",
-        "SECRET_COLLISION",
+        "DEPENDENCY_CONFLICT",
         "PATH_COLLISION",
         "PORT_COLLISION",
-        "DEPENDENCY_CONFLICT",
-        "ARCHITECTURE_CONFLICT",
-        "UNSUPPORTED_TARGET"
+        "SECRET_COLLISION",
+        "UNSUPPORTED_TARGET",
+        "VERSION_DIFFERENCE"
       ],
       "type": "string"
     },
     "ConflictResolution": {
       "enum": [
-        "SKIP",
         "INSTALL",
-        "REPLACE",
+        "MANUAL",
         "MERGE",
         "PRESERVE_TARGET",
-        "MANUAL"
+        "REPLACE",
+        "SKIP"
       ],
       "type": "string"
     },
     "ContentType": {
       "enum": [
-        "UTF8_TEXT",
+        "ARCHIVE",
+        "BINARY",
         "JSON",
         "JSONC",
         "TOML",
-        "BINARY",
-        "ARCHIVE",
-        "UNKNOWN"
+        "UNKNOWN",
+        "UTF8_TEXT"
       ],
       "type": "string"
     },
@@ -202,8 +202,8 @@
       "properties": {
         "image_id": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "repository": {
@@ -211,8 +211,8 @@
         },
         "tag": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         }
       },
@@ -226,8 +226,8 @@
       "properties": {
         "driver": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "name": {
@@ -289,9 +289,9 @@
     },
     "FileMode": {
       "enum": [
+        "CREATE_ONLY",
         "PRESERVE_TARGET",
-        "REPLACE",
-        "CREATE_ONLY"
+        "REPLACE"
       ],
       "type": "string"
     },
@@ -299,8 +299,32 @@
       "oneOf": [
         {
           "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
             "type": {
-              "const": "USER_PROFILE",
+              "const": "USER_SELECTED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DESKTOP",
               "type": "string"
             }
           },
@@ -312,7 +336,7 @@
         {
           "properties": {
             "type": {
-              "const": "ROAMING_APP_DATA",
+              "const": "DOCUMENTS",
               "type": "string"
             }
           },
@@ -372,7 +396,7 @@
         {
           "properties": {
             "type": {
-              "const": "START_MENU",
+              "const": "ROAMING_APP_DATA",
               "type": "string"
             }
           },
@@ -396,7 +420,7 @@
         {
           "properties": {
             "type": {
-              "const": "DESKTOP",
+              "const": "START_MENU",
               "type": "string"
             }
           },
@@ -408,36 +432,12 @@
         {
           "properties": {
             "type": {
-              "const": "DOCUMENTS",
+              "const": "USER_PROFILE",
               "type": "string"
             }
           },
           "required": [
             "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "id": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "USER_SELECTED",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
           ],
           "type": "object"
         }
@@ -449,8 +449,8 @@
         "acknowledged_at": {
           "format": "date-time",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "component": {
@@ -466,8 +466,8 @@
         "docs_url": {
           "format": "uri",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "id": {
@@ -507,20 +507,20 @@
       },
       "required": [
         "id",
-        "title",
+        "independent_operations_may_continue",
+        "instructions",
         "reason",
         "risk",
-        "instructions",
         "state",
-        "independent_operations_may_continue"
+        "title"
       ],
       "type": "object"
     },
     "ManualActionState": {
       "enum": [
-        "PENDING",
         "ACKNOWLEDGED",
         "COMPLETED",
+        "PENDING",
         "SKIPPED"
       ],
       "type": "string"
@@ -539,32 +539,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "ENVIRONMENT_REFERENCE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -591,8 +567,32 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -689,20 +689,20 @@
         }
       },
       "required": [
-        "name",
-        "scope",
-        "transport",
         "args",
         "environment",
-        "source_config"
+        "name",
+        "scope",
+        "source_config",
+        "transport"
       ],
       "type": "object"
     },
     "McpTransport": {
       "enum": [
+        "SSE",
         "STDIO",
         "STREAMABLE_HTTP",
-        "SSE",
         "UNKNOWN"
       ],
       "type": "string"
@@ -720,32 +720,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "ENVIRONMENT_REFERENCE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -772,8 +748,32 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -793,10 +793,10 @@
     },
     "MergePolicy": {
       "enum": [
-        "PRESERVE_UNKNOWN",
-        "REPLACE_KNOWN_KEYS",
         "APPEND_UNIQUE",
-        "MANUAL_ON_CONFLICT"
+        "MANUAL_ON_CONFLICT",
+        "PRESERVE_UNKNOWN",
+        "REPLACE_KNOWN_KEYS"
       ],
       "type": "string"
     },
@@ -842,15 +842,15 @@
         }
       },
       "required": [
-        "id",
         "component",
-        "kind",
-        "prerequisites",
-        "precondition",
+        "id",
         "idempotency_key",
-        "verification",
+        "kind",
+        "non_idempotent",
+        "precondition",
+        "prerequisites",
         "requires_elevation",
-        "non_idempotent"
+        "verification"
       ],
       "type": "object"
     },
@@ -864,79 +864,23 @@
           "properties": {
             "content": {
               "properties": {
-                "provider": {
-                  "$ref": "#/$defs/ProviderId"
+                "action": {
+                  "$ref": "#/$defs/ManualAction"
                 }
               },
               "required": [
-                "provider"
+                "action"
               ],
               "type": "object"
             },
             "type": {
-              "const": "ENSURE_PROVIDER",
+              "const": "OPEN_MANUAL_ACTION",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "package": {
-                  "$ref": "#/$defs/PackageSpec"
-                },
-                "policy": {
-                  "$ref": "#/$defs/PackageInstallPolicy"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderId"
-                }
-              },
-              "required": [
-                "provider",
-                "package",
-                "policy"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "INSTALL_PACKAGE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "runtime": {
-                  "$ref": "#/$defs/RuntimeSpec"
-                }
-              },
-              "required": [
-                "runtime"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "ENSURE_RUNTIME",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -956,8 +900,8 @@
               },
               "required": [
                 "destination",
-                "object",
-                "mode"
+                "mode",
+                "object"
               ],
               "type": "object"
             },
@@ -967,8 +911,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -999,8 +943,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1031,63 +975,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "value": {
-                  "$ref": "#/$defs/SafeValueRef"
-                }
-              },
-              "required": [
-                "name",
-                "value"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "SET_USER_ENVIRONMENT",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "entries": {
-                  "items": {
-                    "$ref": "#/$defs/PathTokenInput"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "entries"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "APPEND_USER_PATH",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1114,8 +1003,71 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "entries": {
+                  "items": {
+                    "$ref": "#/$defs/PathTokenInput"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "entries"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "APPEND_USER_PATH",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "version": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "INSTALL_VS_CODE_EXTENSION",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1142,8 +1094,36 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "$ref": "#/$defs/SafeValueRef"
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "SET_USER_ENVIRONMENT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1159,8 +1139,8 @@
                 }
               },
               "required": [
-                "volume",
-                "object"
+                "object",
+                "volume"
               ],
               "type": "object"
             },
@@ -1170,8 +1150,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1179,35 +1159,31 @@
           "properties": {
             "content": {
               "properties": {
-                "id": {
-                  "type": "string"
+                "package": {
+                  "$ref": "#/$defs/PackageSpec"
                 },
-                "profile": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "policy": {
+                  "$ref": "#/$defs/PackageInstallPolicy"
                 },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "provider": {
+                  "$ref": "#/$defs/ProviderId"
                 }
               },
               "required": [
-                "id"
+                "package",
+                "policy",
+                "provider"
               ],
               "type": "object"
             },
             "type": {
-              "const": "INSTALL_VS_CODE_EXTENSION",
+              "const": "INSTALL_PACKAGE",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1215,47 +1191,23 @@
           "properties": {
             "content": {
               "properties": {
-                "server": {
-                  "$ref": "#/$defs/McpServerSpec"
+                "provider": {
+                  "$ref": "#/$defs/ProviderId"
                 }
               },
               "required": [
-                "server"
+                "provider"
               ],
               "type": "object"
             },
             "type": {
-              "const": "REGISTER_MCP",
+              "const": "ENSURE_PROVIDER",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "action": {
-                  "$ref": "#/$defs/ManualAction"
-                }
-              },
-              "required": [
-                "action"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "OPEN_MANUAL_ACTION",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1278,8 +1230,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1302,8 +1254,56 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "runtime": {
+                  "$ref": "#/$defs/RuntimeSpec"
+                }
+              },
+              "required": [
+                "runtime"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENSURE_RUNTIME",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "server": {
+                  "$ref": "#/$defs/McpServerSpec"
+                }
+              },
+              "required": [
+                "server"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "REGISTER_MCP",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         }
@@ -1326,10 +1326,10 @@
         }
       },
       "required": [
-        "accept_source_agreements",
         "accept_package_agreements",
-        "silent",
-        "allow_reboot"
+        "accept_source_agreements",
+        "allow_reboot",
+        "silent"
       ],
       "type": "object"
     },
@@ -1351,8 +1351,8 @@
         },
         "installer_hash": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "provider": {
@@ -1361,32 +1361,32 @@
         "source": {
           "format": "uri",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "source_identifier": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "source_name": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "version": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         }
       },
       "required": [
-        "provider",
-        "id"
+        "id",
+        "provider"
       ],
       "type": "object"
     },
@@ -1401,8 +1401,8 @@
         }
       },
       "required": [
-        "root",
-        "relative"
+        "relative",
+        "root"
       ],
       "type": "object"
     },
@@ -1410,61 +1410,25 @@
       "oneOf": [
         {
           "properties": {
-            "type": {
-              "const": "ALWAYS",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "content": {
               "properties": {
-                "fingerprint": {
+                "action": {
                   "type": "string"
                 }
               },
               "required": [
-                "fingerprint"
+                "action"
               ],
               "type": "object"
             },
             "type": {
-              "const": "TARGET_FINGERPRINT",
+              "const": "MANUAL_APPROVAL",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "component": {
-                  "$ref": "#/$defs/ComponentId"
-                }
-              },
-              "required": [
-                "component"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "COMPONENT_ABSENT",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1497,8 +1461,56 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "component": {
+                  "$ref": "#/$defs/ComponentId"
+                }
+              },
+              "required": [
+                "component"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "COMPONENT_ABSENT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "fingerprint": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fingerprint"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "TARGET_FINGERPRINT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1521,32 +1533,20 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
         {
           "properties": {
-            "content": {
-              "properties": {
-                "action": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "action"
-              ],
-              "type": "object"
-            },
             "type": {
-              "const": "MANUAL_APPROVAL",
+              "const": "ALWAYS",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "type"
           ],
           "type": "object"
         }
@@ -1561,8 +1561,8 @@
       "properties": {
         "certificate_thumbprint": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "name": {
@@ -1576,17 +1576,17 @@
     },
     "RestoreMode": {
       "enum": [
-        "REBUILD",
-        "MIGRATION"
+        "MIGRATION",
+        "REBUILD"
       ],
       "type": "string"
     },
     "RiskLevel": {
       "enum": [
-        "LOW",
-        "MEDIUM",
+        "CRITICAL",
         "HIGH",
-        "CRITICAL"
+        "LOW",
+        "MEDIUM"
       ],
       "type": "string"
     },
@@ -1612,8 +1612,8 @@
         },
         "version": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         }
       },
@@ -1624,46 +1624,6 @@
     },
     "SafeValueRef": {
       "oneOf": [
-        {
-          "properties": {
-            "content": {
-              "type": "string"
-            },
-            "type": {
-              "const": "LITERAL_NON_SECRET",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "ENVIRONMENT_REFERENCE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
         {
           "properties": {
             "content": {
@@ -1687,8 +1647,48 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "LITERAL_NON_SECRET",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1712,27 +1712,55 @@
           "properties": {
             "content": {
               "properties": {
-                "package": {
-                  "$ref": "#/$defs/PackageSpec"
+                "config": {
+                  "$ref": "#/$defs/PathTokenInput"
                 },
-                "provider": {
-                  "$ref": "#/$defs/ProviderId"
+                "name": {
+                  "type": "string"
                 }
               },
               "required": [
-                "provider",
-                "package"
+                "config",
+                "name"
               ],
               "type": "object"
             },
             "type": {
-              "const": "PROVIDER_IDENTITY",
+              "const": "MCP_REGISTRATION",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "content_type": {
+                  "$ref": "#/$defs/ContentType"
+                },
+                "destination": {
+                  "$ref": "#/$defs/PathTokenInput"
+                }
+              },
+              "required": [
+                "content_type",
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "CONFIG_PARSES",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1765,8 +1793,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1809,8 +1837,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1818,27 +1846,29 @@
           "properties": {
             "content": {
               "properties": {
-                "content_type": {
-                  "$ref": "#/$defs/ContentType"
+                "distro": {
+                  "type": "string"
                 },
-                "destination": {
-                  "$ref": "#/$defs/PathTokenInput"
+                "version": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 }
               },
               "required": [
-                "destination",
-                "content_type"
+                "distro"
               ],
               "type": "object"
             },
             "type": {
-              "const": "CONFIG_PARSES",
+              "const": "WSL_STATE",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1857,9 +1887,9 @@
                 }
               },
               "required": [
-                "scope",
+                "expected",
                 "name",
-                "expected"
+                "scope"
               ],
               "type": "object"
             },
@@ -1869,66 +1899,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "config": {
-                  "$ref": "#/$defs/PathTokenInput"
-                },
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name",
-                "config"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "MCP_REGISTRATION",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "distro": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "distro"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "WSL_STATE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1944,8 +1916,8 @@
                 }
               },
               "required": [
-                "kind",
-                "identity"
+                "identity",
+                "kind"
               ],
               "type": "object"
             },
@@ -1955,8 +1927,36 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "package": {
+                  "$ref": "#/$defs/PackageSpec"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderId"
+                }
+              },
+              "required": [
+                "package",
+                "provider"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "PROVIDER_IDENTITY",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -1979,8 +1979,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -2003,8 +2003,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         }
@@ -2015,8 +2015,8 @@
       "properties": {
         "normalized": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "raw": {
@@ -2103,15 +2103,15 @@
     }
   },
   "required": [
-    "format_version",
-    "run_id",
-    "package_id",
-    "mode",
-    "target_fingerprint",
-    "selected_components",
-    "operations",
     "conflicts",
+    "format_version",
     "manual_actions",
+    "mode",
+    "operations",
+    "package_id",
+    "run_id",
+    "selected_components",
+    "target_fingerprint",
     "warnings"
   ],
   "title": "RestorePlan",

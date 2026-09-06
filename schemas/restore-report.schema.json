@@ -2,11 +2,11 @@
   "$defs": {
     "Architecture": {
       "enum": [
-        "X86",
-        "X64",
         "ARM64",
         "NEUTRAL",
-        "UNKNOWN"
+        "UNKNOWN",
+        "X64",
+        "X86"
       ],
       "type": "string"
     },
@@ -16,34 +16,34 @@
     },
     "ComponentKind": {
       "enum": [
-        "APPLICATION",
-        "PACKAGE",
-        "RUNTIME",
-        "TOOL",
-        "HARNESS",
-        "MCP_SERVER",
-        "SKILL",
         "AGENT",
-        "HOOK",
-        "PLUGIN",
+        "APPLICATION",
         "BROWSER",
         "BROWSER_PROFILE",
-        "EDITOR",
-        "EXTENSION",
         "CONFIGURATION",
         "DATA_ARTIFACT",
-        "SECRET_REFERENCE",
-        "ENVIRONMENT_VARIABLE",
-        "SYSTEM_FEATURE",
-        "SERVICE",
-        "SCHEDULED_TASK",
-        "SHELL",
-        "PORTABLE_BINARY",
-        "WSL_DISTRIBUTION",
         "DOCKER_CONTEXT",
         "DOCKER_IMAGE",
         "DOCKER_VOLUME",
-        "UNKNOWN"
+        "EDITOR",
+        "ENVIRONMENT_VARIABLE",
+        "EXTENSION",
+        "HARNESS",
+        "HOOK",
+        "MCP_SERVER",
+        "PACKAGE",
+        "PLUGIN",
+        "PORTABLE_BINARY",
+        "RUNTIME",
+        "SCHEDULED_TASK",
+        "SECRET_REFERENCE",
+        "SERVICE",
+        "SHELL",
+        "SKILL",
+        "SYSTEM_FEATURE",
+        "TOOL",
+        "UNKNOWN",
+        "WSL_DISTRIBUTION"
       ],
       "type": "string"
     },
@@ -77,32 +77,32 @@
       },
       "required": [
         "component",
-        "status",
         "evidence",
         "manual_actions",
+        "status",
         "warnings"
       ],
       "type": "object"
     },
     "ConfigScope": {
       "enum": [
+        "MANAGED",
         "PROCESS",
-        "USER",
-        "SYSTEM",
         "PROJECT",
-        "MANAGED"
+        "SYSTEM",
+        "USER"
       ],
       "type": "string"
     },
     "ContentType": {
       "enum": [
-        "UTF8_TEXT",
+        "ARCHIVE",
+        "BINARY",
         "JSON",
         "JSONC",
         "TOML",
-        "BINARY",
-        "ARCHIVE",
-        "UNKNOWN"
+        "UNKNOWN",
+        "UTF8_TEXT"
       ],
       "type": "string"
     },
@@ -110,8 +110,32 @@
       "oneOf": [
         {
           "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
             "type": {
-              "const": "USER_PROFILE",
+              "const": "USER_SELECTED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DESKTOP",
               "type": "string"
             }
           },
@@ -123,7 +147,7 @@
         {
           "properties": {
             "type": {
-              "const": "ROAMING_APP_DATA",
+              "const": "DOCUMENTS",
               "type": "string"
             }
           },
@@ -183,7 +207,7 @@
         {
           "properties": {
             "type": {
-              "const": "START_MENU",
+              "const": "ROAMING_APP_DATA",
               "type": "string"
             }
           },
@@ -207,7 +231,7 @@
         {
           "properties": {
             "type": {
-              "const": "DESKTOP",
+              "const": "START_MENU",
               "type": "string"
             }
           },
@@ -219,36 +243,12 @@
         {
           "properties": {
             "type": {
-              "const": "DOCUMENTS",
+              "const": "USER_PROFILE",
               "type": "string"
             }
           },
           "required": [
             "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "id": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "USER_SELECTED",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
           ],
           "type": "object"
         }
@@ -260,8 +260,8 @@
         "acknowledged_at": {
           "format": "date-time",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "component": {
@@ -277,8 +277,8 @@
         "docs_url": {
           "format": "uri",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "id": {
@@ -318,20 +318,20 @@
       },
       "required": [
         "id",
-        "title",
+        "independent_operations_may_continue",
+        "instructions",
         "reason",
         "risk",
-        "instructions",
         "state",
-        "independent_operations_may_continue"
+        "title"
       ],
       "type": "object"
     },
     "ManualActionState": {
       "enum": [
-        "PENDING",
         "ACKNOWLEDGED",
         "COMPLETED",
+        "PENDING",
         "SKIPPED"
       ],
       "type": "string"
@@ -358,8 +358,8 @@
         },
         "installer_hash": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "provider": {
@@ -368,32 +368,32 @@
         "source": {
           "format": "uri",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "source_identifier": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "source_name": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "version": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         }
       },
       "required": [
-        "provider",
-        "id"
+        "id",
+        "provider"
       ],
       "type": "object"
     },
@@ -408,8 +408,8 @@
         }
       },
       "required": [
-        "root",
-        "relative"
+        "relative",
+        "root"
       ],
       "type": "object"
     },
@@ -422,8 +422,8 @@
       "properties": {
         "certificate_thumbprint": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "name": {
@@ -480,37 +480,37 @@
         }
       },
       "required": [
-        "verified",
-        "partial",
         "already_present",
-        "waiting_for_user",
+        "failed",
+        "partial",
         "reauth_required",
         "reboot_required",
         "unsupported",
-        "failed"
+        "verified",
+        "waiting_for_user"
       ],
       "type": "object"
     },
     "ReportStatus": {
       "enum": [
-        "VERIFIED",
-        "PARTIALLY_VERIFIED",
         "ALREADY_PRESENT",
-        "SKIPPED",
-        "WAITING_FOR_USER",
+        "FAILED",
+        "PARTIALLY_VERIFIED",
         "REAUTH_REQUIRED",
         "REBOOT_REQUIRED",
+        "SKIPPED",
         "UNSUPPORTED",
-        "FAILED"
+        "VERIFIED",
+        "WAITING_FOR_USER"
       ],
       "type": "string"
     },
     "RiskLevel": {
       "enum": [
-        "LOW",
-        "MEDIUM",
+        "CRITICAL",
         "HIGH",
-        "CRITICAL"
+        "LOW",
+        "MEDIUM"
       ],
       "type": "string"
     },
@@ -520,46 +520,6 @@
     },
     "SafeValueRef": {
       "oneOf": [
-        {
-          "properties": {
-            "content": {
-              "type": "string"
-            },
-            "type": {
-              "const": "LITERAL_NON_SECRET",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "ENVIRONMENT_REFERENCE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
         {
           "properties": {
             "content": {
@@ -583,8 +543,48 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ENVIRONMENT_REFERENCE",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "LITERAL_NON_SECRET",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -620,10 +620,10 @@
         }
       },
       "required": [
+        "observed_at",
         "rule",
         "status",
-        "summary",
-        "observed_at"
+        "summary"
       ],
       "type": "object"
     },
@@ -633,27 +633,55 @@
           "properties": {
             "content": {
               "properties": {
-                "package": {
-                  "$ref": "#/$defs/PackageSpec"
+                "config": {
+                  "$ref": "#/$defs/PathTokenInput"
                 },
-                "provider": {
-                  "$ref": "#/$defs/ProviderId"
+                "name": {
+                  "type": "string"
                 }
               },
               "required": [
-                "provider",
-                "package"
+                "config",
+                "name"
               ],
               "type": "object"
             },
             "type": {
-              "const": "PROVIDER_IDENTITY",
+              "const": "MCP_REGISTRATION",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "content_type": {
+                  "$ref": "#/$defs/ContentType"
+                },
+                "destination": {
+                  "$ref": "#/$defs/PathTokenInput"
+                }
+              },
+              "required": [
+                "content_type",
+                "destination"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "CONFIG_PARSES",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -686,8 +714,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -730,8 +758,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -739,27 +767,29 @@
           "properties": {
             "content": {
               "properties": {
-                "content_type": {
-                  "$ref": "#/$defs/ContentType"
+                "distro": {
+                  "type": "string"
                 },
-                "destination": {
-                  "$ref": "#/$defs/PathTokenInput"
+                "version": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 }
               },
               "required": [
-                "destination",
-                "content_type"
+                "distro"
               ],
               "type": "object"
             },
             "type": {
-              "const": "CONFIG_PARSES",
+              "const": "WSL_STATE",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -778,9 +808,9 @@
                 }
               },
               "required": [
-                "scope",
+                "expected",
                 "name",
-                "expected"
+                "scope"
               ],
               "type": "object"
             },
@@ -790,66 +820,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "config": {
-                  "$ref": "#/$defs/PathTokenInput"
-                },
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name",
-                "config"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "MCP_REGISTRATION",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "distro": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "distro"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "WSL_STATE",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -865,8 +837,8 @@
                 }
               },
               "required": [
-                "kind",
-                "identity"
+                "identity",
+                "kind"
               ],
               "type": "object"
             },
@@ -876,8 +848,36 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "properties": {
+                "package": {
+                  "$ref": "#/$defs/PackageSpec"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderId"
+                }
+              },
+              "required": [
+                "package",
+                "provider"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "PROVIDER_IDENTITY",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -900,8 +900,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         },
@@ -924,8 +924,8 @@
             }
           },
           "required": [
-            "type",
-            "content"
+            "content",
+            "type"
           ],
           "type": "object"
         }
@@ -936,8 +936,8 @@
       "properties": {
         "normalized": {
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ]
         },
         "raw": {
@@ -1001,16 +1001,16 @@
     }
   },
   "required": [
-    "format_version",
-    "run_id",
-    "package_id",
-    "status",
-    "counts",
+    "bytes_written",
     "components",
-    "manual_actions",
-    "warnings",
+    "counts",
     "elapsed_ms",
-    "bytes_written"
+    "format_version",
+    "manual_actions",
+    "package_id",
+    "run_id",
+    "status",
+    "warnings"
   ],
   "title": "RestoreReport",
   "type": "object"

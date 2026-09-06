@@ -11,47 +11,47 @@
     "ReforgeErrorCode": {
       "enum": [
         "ACCESS_DENIED",
-        "PATH_NOT_FOUND",
-        "FILE_LOCKED",
-        "INVALID_PATH",
-        "REPARSE_POINT",
-        "PROVIDER_UNAVAILABLE",
-        "PROVIDER_PARSE_FAILED",
-        "SOURCE_UNAVAILABLE",
-        "VERSION_UNAVAILABLE",
-        "PACKAGE_NOT_FOUND",
-        "PACKAGE_CORRUPT",
-        "PACKAGE_UNTRUSTED",
-        "VAULT_REQUIRED",
-        "VAULT_DECRYPT_FAILED",
-        "SECRET_NOT_PORTABLE",
-        "MANUAL_SECRET_REQUIRED",
-        "SCHEMA_INVALID",
-        "UNSUPPORTED_VERSION",
         "ARCHITECTURE_CONFLICT",
-        "OS_CONFLICT",
-        "INSUFFICIENT_DISK",
+        "CANCELLED",
         "DEPENDENCY_CYCLE",
-        "SELECTION_INCOMPLETE",
-        "TARGET_CONFLICT",
-        "SECURITY_POLICY",
-        "MANUAL_ACTION_REQUIRED",
-        "USER_ACTION_REQUIRED",
-        "REBOOT_REQUIRED",
-        "OPERATION_FAILED",
+        "FILE_LOCKED",
         "INSTALL_FAILED",
-        "VERIFICATION_FAILED",
+        "INSUFFICIENT_DISK",
         "INTERRUPTED",
-        "CANCELLED"
+        "INVALID_PATH",
+        "MANUAL_ACTION_REQUIRED",
+        "MANUAL_SECRET_REQUIRED",
+        "OPERATION_FAILED",
+        "OS_CONFLICT",
+        "PACKAGE_CORRUPT",
+        "PACKAGE_NOT_FOUND",
+        "PACKAGE_UNTRUSTED",
+        "PATH_NOT_FOUND",
+        "PROVIDER_PARSE_FAILED",
+        "PROVIDER_UNAVAILABLE",
+        "REBOOT_REQUIRED",
+        "REPARSE_POINT",
+        "SCHEMA_INVALID",
+        "SECRET_NOT_PORTABLE",
+        "SECURITY_POLICY",
+        "SELECTION_INCOMPLETE",
+        "SOURCE_UNAVAILABLE",
+        "TARGET_CONFLICT",
+        "UNSUPPORTED_VERSION",
+        "USER_ACTION_REQUIRED",
+        "VAULT_DECRYPT_FAILED",
+        "VAULT_REQUIRED",
+        "VERIFICATION_FAILED",
+        "VERSION_UNAVAILABLE"
       ],
       "type": "string"
     },
     "Retryability": {
       "enum": [
+        "AFTER_REBOOT",
         "NEVER",
-        "SAFE_RETRY",
         "REQUIRES_USER_ACTION",
-        "AFTER_REBOOT"
+        "SAFE_RETRY"
       ],
       "type": "string"
     }
@@ -74,8 +74,8 @@
     },
     "context_id": {
       "type": [
-        "string",
-        "null"
+        "null",
+        "string"
       ]
     },
     "message": {
@@ -96,8 +96,8 @@
     },
     "technical_detail": {
       "type": [
-        "string",
-        "null"
+        "null",
+        "string"
       ]
     }
   },

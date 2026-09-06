@@ -2,11 +2,11 @@
   "$defs": {
     "Architecture": {
       "enum": [
-        "X86",
-        "X64",
         "ARM64",
         "NEUTRAL",
-        "UNKNOWN"
+        "UNKNOWN",
+        "X64",
+        "X86"
       ],
       "type": "string"
     },
@@ -18,8 +18,32 @@
       "oneOf": [
         {
           "properties": {
+            "content": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
             "type": {
-              "const": "USER_PROFILE",
+              "const": "USER_SELECTED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "DESKTOP",
               "type": "string"
             }
           },
@@ -31,7 +55,7 @@
         {
           "properties": {
             "type": {
-              "const": "ROAMING_APP_DATA",
+              "const": "DOCUMENTS",
               "type": "string"
             }
           },
@@ -91,7 +115,7 @@
         {
           "properties": {
             "type": {
-              "const": "START_MENU",
+              "const": "ROAMING_APP_DATA",
               "type": "string"
             }
           },
@@ -115,7 +139,7 @@
         {
           "properties": {
             "type": {
-              "const": "DESKTOP",
+              "const": "START_MENU",
               "type": "string"
             }
           },
@@ -127,36 +151,12 @@
         {
           "properties": {
             "type": {
-              "const": "DOCUMENTS",
+              "const": "USER_PROFILE",
               "type": "string"
             }
           },
           "required": [
             "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "content": {
-              "properties": {
-                "id": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": {
-              "const": "USER_SELECTED",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "content"
           ],
           "type": "object"
         }
@@ -182,10 +182,10 @@
         }
       },
       "required": [
-        "os_version",
-        "os_build",
         "architecture",
-        "known_folder_tokens"
+        "known_folder_tokens",
+        "os_build",
+        "os_version"
       ],
       "type": "object"
     }
@@ -227,8 +227,8 @@
     },
     "required_os": {
       "type": [
-        "string",
-        "null"
+        "null",
+        "string"
       ]
     },
     "source_host": {
@@ -242,13 +242,13 @@
     }
   },
   "required": [
-    "package_id",
-    "format_version",
-    "created_at",
-    "source_host",
     "component_ids",
-    "warnings",
-    "object_index_digest"
+    "created_at",
+    "format_version",
+    "object_index_digest",
+    "package_id",
+    "source_host",
+    "warnings"
   ],
   "title": "PackageManifest",
   "type": "object"

@@ -37,6 +37,9 @@ pub fn schema_json<T: JsonSchema>() -> Value {
     canonicalize_json(schema)
 }
 
+const ORDER_INSENSITIVE_ARRAY_KEYS: [&str; 6] =
+    ["allOf", "anyOf", "enum", "oneOf", "required", "type"];
+
 fn canonicalize_json(value: Value) -> Value {
     match value {
         Value::Object(object) => {
@@ -44,13 +47,31 @@ fn canonicalize_json(value: Value) -> Value {
             entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
             let mut sorted = serde_json::Map::with_capacity(entries.len());
             for (key, value) in entries {
-                sorted.insert(key, canonicalize_json(value));
+                let value = canonicalize_json(value);
+                let value = if ORDER_INSENSITIVE_ARRAY_KEYS.contains(&key.as_str()) {
+                    sort_schema_set(value)
+                } else {
+                    value
+                };
+                sorted.insert(key, value);
             }
             Value::Object(sorted)
         }
         Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
         other => other,
     }
+}
+
+fn sort_schema_set(value: Value) -> Value {
+    let Value::Array(mut values) = value else {
+        return value;
+    };
+    values.sort_unstable_by(|left, right| {
+        let left = serde_json::to_vec(left).expect("canonical schema value must serialize");
+        let right = serde_json::to_vec(right).expect("canonical schema value must serialize");
+        left.cmp(&right)
+    });
+    Value::Array(values)
 }
 
 /// Write all canonical schemas beneath `directory`.
