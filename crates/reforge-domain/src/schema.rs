@@ -32,7 +32,25 @@ pub fn schema_documents() -> [(&'static str, Value); 6] {
 
 /// Generate one JSON Schema value from a canonical domain type.
 pub fn schema_json<T: JsonSchema>() -> Value {
-    serde_json::to_value(schema_for!(T)).expect("JsonSchema output must be serializable")
+    let schema =
+        serde_json::to_value(schema_for!(T)).expect("JsonSchema output must be serializable");
+    canonicalize_json(schema)
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            let mut sorted = serde_json::Map::with_capacity(entries.len());
+            for (key, value) in entries {
+                sorted.insert(key, canonicalize_json(value));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        other => other,
+    }
 }
 
 /// Write all canonical schemas beneath `directory`.
