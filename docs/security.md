@@ -95,7 +95,7 @@ Reforge has no telemetry or remote inventory. The local CLI may invoke a selecte
 
 ## Release and supply chain
 
-Source is Apache-2.0. Rust and frontend lockfiles are committed. CI checks formatting, UI generation/check/build, Rust build/lint/tests, dependency advisories, license metadata, and SBOM generation. Release packaging uses protected Tauri signing credentials, verifies valid and mutated signatures independently, rejects wrong-architecture updater entries, hashes supplemental artifacts, and publishes only after verification. Signing keys are not stored in packages or the repository.
+Source is MIT. Rust and frontend lockfiles are committed. CI checks formatting, UI generation/check/build, Rust build/lint/tests, dependency advisories, license metadata, and SBOM generation. Release packaging uses protected Tauri signing credentials, verifies valid and mutated signatures independently, rejects wrong-architecture updater entries, hashes supplemental artifacts, and publishes only after verification. Signing keys are not stored in packages or the repository.
 
 The checked-in Tauri configuration has updater artifacts disabled for the CLI-only local build. The release workflow supplies an ephemeral signed-release overlay and requires protected signing secrets; a local unsigned build must not be described as a signed release.
 
