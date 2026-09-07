@@ -112,6 +112,10 @@ mod tests {
             let actual = fs::read(&path).unwrap_or_else(|error| {
                 panic!("missing generated schema {}: {error}", path.display())
             });
+            let actual = String::from_utf8(actual)
+                .expect("checked-in schema must be valid UTF-8")
+                .replace("\r\n", "\n")
+                .into_bytes();
             assert_eq!(
                 actual,
                 expected,
